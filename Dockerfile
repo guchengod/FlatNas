@@ -1,5 +1,5 @@
 # Stage 1: Build Frontend
-FROM node:20-alpine AS frontend-builder
+FROM node:20.19-bookworm-slim AS frontend-builder
 
 # 1. 接收构建参数（代理地址）
 ARG HTTP_PROXY

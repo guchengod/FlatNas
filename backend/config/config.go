@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -52,6 +53,7 @@ func Init() {
 	ConfigVersionsDir = filepath.Join(DataDir, "config_versions")
 
 	ensureDirs()
+	ensureSystemConfig()
 	loadSecretKey()
 }
 
@@ -61,6 +63,27 @@ func ensureDirs() {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			log.Printf("Failed to create dir %s: %v", dir, err)
 		}
+	}
+}
+
+func ensureSystemConfig() {
+	if _, err := os.Stat(SystemConfigFile); err == nil {
+		return
+	} else if !os.IsNotExist(err) {
+		log.Printf("Failed to check system config: %v", err)
+		return
+	}
+	defaultConfig := map[string]interface{}{
+		"authMode":     "single",
+		"enableDocker": true,
+	}
+	data, err := json.MarshalIndent(defaultConfig, "", "  ")
+	if err != nil {
+		log.Printf("Failed to marshal system config: %v", err)
+		return
+	}
+	if err := os.WriteFile(SystemConfigFile, data, 0644); err != nil {
+		log.Printf("Failed to write system config: %v", err)
 	}
 }
 

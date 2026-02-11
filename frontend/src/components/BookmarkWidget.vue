@@ -19,7 +19,8 @@ const filteredData = computed(() => {
   return (props.widget.data || [])
     .map((cat: BookmarkCategory) => {
       const catMatches = cat.title.toLowerCase().includes(query);
-      const matchingChildren = cat.children.filter((item: BookmarkCategory | BookmarkItem) => {
+      const children = Array.isArray(cat.children) ? cat.children : [];
+      const matchingChildren = children.filter((item: BookmarkCategory | BookmarkItem) => {
         if ("url" in item) {
           return item.title.toLowerCase().includes(query) || item.url.toLowerCase().includes(query);
         }
@@ -29,7 +30,7 @@ const filteredData = computed(() => {
       if (catMatches || matchingChildren.length > 0) {
         return {
           ...cat,
-          children: catMatches ? cat.children : matchingChildren,
+          children: catMatches ? children : matchingChildren,
         };
       }
       return null;
@@ -425,7 +426,7 @@ const handleScrollIsolation = (e: WheelEvent) => {
 
         <div v-if="!cat.collapsed" class="flex flex-col gap-2">
           <div
-            v-for="link in cat.children"
+            v-for="link in (cat.children || [])"
             :key="link.id"
             class="flex items-center gap-3 p-2 hover:bg-white/10 rounded-xl cursor-pointer transition-all group/link border border-transparent hover:border-white/10"
             @click.stop="openUrl(link.url)"
@@ -471,7 +472,7 @@ const handleScrollIsolation = (e: WheelEvent) => {
           </div>
 
           <div
-            v-if="cat.children.length === 0 && activeCategoryId !== cat.id"
+            v-if="(cat.children || []).length === 0 && activeCategoryId !== cat.id"
             class="text-sm text-white/50 py-2 px-4 border border-dashed border-white/10 rounded-lg select-none"
           >
             (空文件夹)

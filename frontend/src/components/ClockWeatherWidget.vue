@@ -633,7 +633,7 @@ onUnmounted(() => {
           v-if="weather.today && weather.today.min"
         >
           <span>🌡️ {{ weather.today.min }}°/{{ weather.today.max }}°</span>
-          <span v-if="weather.humidity">💧 {{ weather.humidity }}%</span>
+          <span v-if="weather.humidity">💧 {{ weather.humidity }}</span>
         </div>
       </div>
     </div>

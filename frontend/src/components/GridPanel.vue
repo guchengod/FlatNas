@@ -1389,7 +1389,9 @@ onUnmounted(() => {
 watch(
   () => store.groups,
   () => {
-    const hasAny = store.groups.some((g) => g.items.some((item) => !!item.containerId));
+    const hasAny = store.groups.some((g) =>
+      g.items.some((item) => !!item.containerId || !!item.containerName),
+    );
     if (hasAny && !containerPollTimer && isMounted.value && document.visibilityState !== "hidden") {
       fetchContainerStatuses();
     }

@@ -11,6 +11,7 @@ const store = useMainStore();
 const isEditing = ref(false);
 
 // Default data if empty
+const titleContent = ref(props.widget.data?.title || "自定义组件");
 const htmlContent = ref(
   props.widget.data?.html || '<div class="my-component">Hello Custom Widget</div>',
 );
@@ -50,6 +51,7 @@ const save = () => {
   const widget = store.widgets.find((w) => w.id === props.widget.id);
   if (widget) {
     widget.data = {
+      title: titleContent.value,
       html: htmlContent.value,
       css: cssContent.value,
     };
@@ -173,6 +175,15 @@ watch([htmlContent, cssContent], () => {
             取消
           </button>
         </div>
+      </div>
+
+      <div class="flex flex-col gap-1">
+        <label class="text-xs font-semibold text-gray-500">标题</label>
+        <input
+          v-model="titleContent"
+          class="p-2 border rounded text-xs focus:border-blue-500 outline-none text-gray-900"
+          placeholder="自定义组件"
+        />
       </div>
 
       <div class="flex-1 flex flex-col gap-1 min-h-0">

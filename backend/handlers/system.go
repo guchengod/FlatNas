@@ -22,6 +22,20 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
+	"sort"
+)
+
+type NetworkStat struct {
+	Iface string `json:"iface"`
+	RxSec uint64 `json:"rx_sec"`
+	TxSec uint64 `json:"tx_sec"`
+}
+
+var (
+	lastNetStats       []net.IOCountersStat
+	lastNetTime        time.Time
+	lastCalculatedRates []NetworkStat
+	netMutex           sync.Mutex
 )
 
 func GetSystemStats(c *gin.Context) {
@@ -37,7 +51,77 @@ func GetSystemStats(c *gin.Context) {
 		volume = volume + "\\"
 	}
 	d, _ := disk.Usage(volume)
-	n, _ := net.IOCounters(false)
+	
+	// Network Stats Calculation
+	currentNet, _ := net.IOCounters(true)
+	now := time.Now()
+	
+	netMutex.Lock()
+	var networkStats []NetworkStat
+	
+	duration := now.Sub(lastNetTime).Seconds()
+	
+	if lastNetTime.IsZero() || duration < 1.0 {
+		// If first run or requests too close, return last calculated (or empty/zero for first run)
+		if lastCalculatedRates == nil {
+			// First run, initialize with zero
+			for _, n := range currentNet {
+				networkStats = append(networkStats, NetworkStat{
+					Iface: n.Name,
+					RxSec: 0,
+					TxSec: 0,
+				})
+			}
+			lastNetStats = currentNet
+			lastNetTime = now
+			lastCalculatedRates = networkStats
+		} else {
+			networkStats = lastCalculatedRates
+		}
+	} else {
+		// Calculate rates
+		currMap := make(map[string]net.IOCountersStat)
+		for _, n := range currentNet {
+			currMap[n.Name] = n
+		}
+		
+		lastMap := make(map[string]net.IOCountersStat)
+		for _, n := range lastNetStats {
+			lastMap[n.Name] = n
+		}
+		
+		for _, curr := range currentNet {
+			rxSec := uint64(0)
+			txSec := uint64(0)
+			
+			if last, ok := lastMap[curr.Name]; ok {
+				if curr.BytesRecv >= last.BytesRecv {
+					rxSec = uint64(float64(curr.BytesRecv - last.BytesRecv) / duration)
+				}
+				if curr.BytesSent >= last.BytesSent {
+					txSec = uint64(float64(curr.BytesSent - last.BytesSent) / duration)
+				}
+			}
+			
+			networkStats = append(networkStats, NetworkStat{
+				Iface: curr.Name,
+				RxSec: rxSec,
+				TxSec: txSec,
+			})
+		}
+		
+		// Update state
+		lastNetStats = currentNet
+		lastNetTime = now
+		lastCalculatedRates = networkStats
+	}
+	netMutex.Unlock()
+	
+	// Sort by interface name for consistency
+	sort.Slice(networkStats, func(i, j int) bool {
+		return networkStats[i].Iface < networkStats[j].Iface
+	})
+
 	h, _ := host.Info()
 
 	cpuLoad := 0.0
@@ -75,7 +159,7 @@ func GetSystemStats(c *gin.Context) {
 				"mount": d.Path,
 			},
 		},
-		"network": n,
+		"network": networkStats,
 		"os": gin.H{
 			"distro":   h.Platform,
 			"release":  h.PlatformVersion,

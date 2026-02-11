@@ -128,7 +128,7 @@
     },
     "wallpaperMobileImageBase": "/mobile_backgrounds",
     "wallpaperPcImageBase": "/backgrounds",
-    "weatherSource": "wttr",
+    "weatherSource": "uapi",
     "webGroupPagination": false,
     "webGroupPaginationDisableFlip": false,
     "widgetAreaCols": 4,
@@ -588,7 +588,11 @@
     },
     {
       "colSpan": 1,
-      "data": "1.0.76dev\n修改了一些布局\n优化了内外网判定逻辑\n",
+      "data": {
+        "content": "1.0.76dev\n修改了一些布局\n优化了内外网判定逻辑\n",
+        "mode": "simple",
+        "updatedAt": 1770798937649
+      },
       "enable": true,
       "h": 2,
       "id": "w4",
@@ -799,20 +803,20 @@
     },
     {
       "colSpan": 1,
+      "enable": false,
+      "id": "status-monitor",
+      "isPublic": true,
+      "rowSpan": 1,
+      "type": "status-monitor"
+    },
+    {
+      "colSpan": 1,
       "data": null,
       "enable": false,
       "id": "docker",
       "isPublic": false,
       "rowSpan": 1,
       "type": "docker"
-    },
-    {
-      "colSpan": 1,
-      "enable": false,
-      "id": "status-monitor",
-      "isPublic": true,
-      "rowSpan": 1,
-      "type": "status-monitor"
     }
   ]
 }

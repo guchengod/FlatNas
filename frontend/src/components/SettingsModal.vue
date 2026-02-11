@@ -932,6 +932,7 @@ const addCustomCssWidget = () => {
     type: "custom-css",
     enable: true,
     data: {
+      title: "自定义组件",
       html: '<div class="my-custom-component">\n  <h3>自定义组件</h3>\n  <p>点击右上角编辑按钮修改内容</p>\n</div>',
       css: ".my-custom-component {\n  padding: 10px;\n  background: linear-gradient(to right, #e0eafc, #cfdef3);\n  border-radius: 8px;\n  text-align: center;\n  height: 100%;\n  display: flex;\n  flex-direction: column;\n  justify-content: center;\n}\n.my-custom-component h3 {\n  margin: 0 0 5px 0;\n  color: #333;\n}",
     },
@@ -2405,7 +2406,7 @@ watch(activeTab, (val) => {
                                                                       : w.type === "docker"
                                                                         ? "Docker 管理"
                                                                         : w.type === "custom-css"
-                                                                          ? "自定义组件"
+                                                                          ? w.data?.title || "自定义组件"
                                                                           : w.type === "music"
                                                                             ? "道理鱼音乐"
                                                                             : w.type === "amap-weather"

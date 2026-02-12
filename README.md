@@ -120,9 +120,9 @@ sudo ./deploy_debian.sh
 部署完成后，使用管理脚本进行常用运维操作（查看状态、修改端口、配置 HTTPS、查看日志、卸载）。
 
 ```bash
-wget -O debian/manage.sh https://raw.githubusercontent.com/Garry-QD/FlatNas/main/debian/manage.sh
-chmod +x debian/manage.sh
-sudo ./debian/manage.sh
+wget -O manage.sh https://raw.githubusercontent.com/Garry-QD/FlatNas/main/manage.sh
+chmod +x manage.sh
+sudo ./manage.sh
 ```
 
 菜单功能说明：

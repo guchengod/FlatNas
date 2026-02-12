@@ -32,7 +32,8 @@ const historyIndex = ref(-1);
 
 // 🎶 智能 URL 处理
 const getMusicUrl = (fileName: string) => {
-  if (!fileName || fileName === "加载中..." || fileName === "无音乐") return undefined;
+  if (!fileName || fileName === "加载中..." || fileName === "无音乐")
+    return undefined;
   // Support nested paths by encoding each segment separately
   const url = `/music/${fileName
     .split("/")
@@ -67,53 +68,76 @@ const fetchMusicList = async () => {
   }
 };
 
+let playRequestId = 0;
+let switchTimer: ReturnType<typeof setTimeout> | null = null;
+const scheduleSwitch = (fn: () => void | Promise<void>) => {
+  if (switchTimer) clearTimeout(switchTimer);
+  switchTimer = setTimeout(() => {
+    void fn();
+  }, 120);
+};
+
 // ⏭️ 切歌 (下一首)
 const playNext = () => {
   if (musicList.value.length <= 1) return;
 
-  // 如果在历史记录中不是最新的，直接前进
-  if (historyIndex.value < history.value.length - 1) {
-    historyIndex.value++;
-    currentSongName.value = history.value[historyIndex.value] || "";
-  } else {
-    // 否则随机新歌
-    let nextSong = currentSongName.value;
-    while (nextSong === currentSongName.value) {
-      nextSong = musicList.value[Math.floor(Math.random() * musicList.value.length)] || "";
+  scheduleSwitch(async () => {
+    if (historyIndex.value < history.value.length - 1) {
+      historyIndex.value++;
+      currentSongName.value = history.value[historyIndex.value] || "";
+    } else {
+      let nextSong = currentSongName.value;
+      while (nextSong === currentSongName.value) {
+        nextSong =
+          musicList.value[Math.floor(Math.random() * musicList.value.length)] ||
+          "";
+      }
+      currentSongName.value = nextSong;
+      history.value.push(nextSong);
+      historyIndex.value++;
     }
-    currentSongName.value = nextSong;
-    history.value.push(nextSong);
-    historyIndex.value++;
-  }
 
-  playAudio();
+    await nextTick();
+    playAudio();
+  });
 };
 
 // ⏮️ 上一首
 const playPrev = () => {
   if (historyIndex.value > 0) {
-    historyIndex.value--;
-    currentSongName.value = history.value[historyIndex.value] || "";
-    playAudio();
+    scheduleSwitch(async () => {
+      historyIndex.value--;
+      currentSongName.value = history.value[historyIndex.value] || "";
+      await nextTick();
+      playAudio();
+    });
   }
 };
 
 // 🔊 播放逻辑封装
-const playAudio = () => {
-  if (audioRef.value) {
-    audioRef.value.load();
-    const promise = audioRef.value.play();
-    if (promise !== undefined) {
-      promise
-        .then(() => {
-          isPlaying.value = true;
-          store.activeMusicPlayer = "mini-player";
-        })
-        .catch((e) => {
-          console.error("[MiniPlayer] Play failed:", e);
-          isPlaying.value = false;
-        });
+const playAudio = async () => {
+  const player = audioRef.value;
+  if (!player) return;
+  const requestId = ++playRequestId;
+  try {
+    player.pause();
+    player.load();
+    const promise = player.play();
+    if (promise !== undefined) await promise;
+    if (requestId !== playRequestId) return;
+    isPlaying.value = true;
+    store.activeMusicPlayer = "mini-player";
+  } catch (e) {
+    if (requestId !== playRequestId) return;
+    const msg = (e as Error)?.message || "";
+    if (
+      msg.includes("interrupted by a new load request") ||
+      msg.includes("play() request was interrupted")
+    ) {
+      return;
     }
+    console.error("[MiniPlayer] Play failed:", e);
+    isPlaying.value = false;
   }
 };
 
@@ -130,15 +154,26 @@ const toggleMusic = async () => {
   if (isPlaying.value) {
     player.pause();
     isPlaying.value = false;
+    playRequestId++;
   } else {
     // if (player.readyState === 0 || player.error) player.load() // playAudio/toggle already handles loading implicitly via play or manual load
     try {
       // 如果是暂停状态直接 play，如果是出错状态可能需要 load
       if (player.error) player.load();
-      await player.play();
+      const requestId = ++playRequestId;
+      const promise = player.play();
+      if (promise !== undefined) await promise;
+      if (requestId !== playRequestId) return;
       isPlaying.value = true;
       store.activeMusicPlayer = "mini-player";
     } catch (e) {
+      const msg = (e as Error)?.message || "";
+      if (
+        msg.includes("interrupted by a new load request") ||
+        msg.includes("play() request was interrupted")
+      ) {
+        return;
+      }
       console.error("[MiniPlayer] Toggle play failed:", e);
       player.load(); // 失败尝试重载
       // 再次尝试播放可能会导致死循环，这里只 load
@@ -305,9 +340,10 @@ watch(
         >{{ currentSongName.replace(/\.(mp3|flac|wav|m4a)$/i, "") }}</span
       >
       <div class="flex items-center w-full pr-0">
-        <span class="text-[12px] opacity-70 origin-left truncate w-auto mr-auto">{{
-          isPlaying ? "正在播放" : "已暂停"
-        }}</span>
+        <span
+          class="text-[12px] opacity-70 origin-left truncate w-auto mr-auto"
+          >{{ isPlaying ? "正在播放" : "已暂停" }}</span
+        >
         <div class="flex items-center gap-0.5 flex-shrink-0 origin-right">
           <button
             @click="playPrev"

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"flatnasgo-backend/config"
@@ -34,6 +35,7 @@ var containerUpdateMu sync.RWMutex
 var statsCache = map[string]statsCacheEntry{}
 var statsCacheMu sync.RWMutex
 var statsCollectMu sync.Mutex
+var statsCollecting atomic.Bool
 var lastStatsCollect time.Time
 var statsTTL = 10 * time.Second
 
@@ -370,7 +372,12 @@ func ListContainers(c *gin.Context) {
 		return
 	}
 
-	collectStatsIfNeeded(dc, containers)
+	if statsCollecting.CompareAndSwap(false, true) {
+		go func() {
+			collectStatsIfNeeded(dc, containers)
+			statsCollecting.Store(false)
+		}()
+	}
 
 	containerUpdateMu.RLock()
 	updateMap := make(map[string]bool, len(containerUpdateCache))

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"strings"
+	"time"
 
 	"flatnasgo-backend/config"
 
@@ -53,6 +54,47 @@ func BindTodoHandlers(server *socketio.Server) {
 	})
 }
 
+type NetworkModePayload struct {
+	Token string `json:"token"`
+	Mode  string `json:"mode"`
+}
+
+type NetworkHeartbeatPayload struct {
+	Token string `json:"token"`
+}
+
+func BindNetworkHandlers(server *socketio.Server) {
+	server.OnEvent("/", "network:mode", func(s socketio.Conn, msg interface{}) {
+		token, mode, ok := parseNetworkModePayload(msg)
+		if !ok {
+			return
+		}
+		username, ok := validateSocketToken(token)
+		if !ok {
+			return
+		}
+		if !isValidNetworkMode(mode) {
+			return
+		}
+		server.BroadcastToNamespace("/", "network:mode", map[string]interface{}{
+			"mode":     mode,
+			"username": username,
+		})
+	})
+	server.OnEvent("/", "network:heartbeat", func(s socketio.Conn, msg interface{}) {
+		token, ok := parseTokenPayload(msg)
+		if !ok {
+			return
+		}
+		if _, ok := validateSocketToken(token); !ok {
+			return
+		}
+		s.Emit("network:heartbeat", map[string]interface{}{
+			"ts": time.Now().UnixMilli(),
+		})
+	})
+}
+
 func parseMemoPayload(msg interface{}) (string, string, interface{}, bool) {
 	switch v := msg.(type) {
 	case MemoUpdatePayload:
@@ -100,6 +142,62 @@ func parseTodoPayload(msg interface{}) (string, string, interface{}, bool) {
 		return token, widgetId, content, true
 	default:
 		return "", "", nil, false
+	}
+}
+
+func parseNetworkModePayload(msg interface{}) (string, string, bool) {
+	switch v := msg.(type) {
+	case NetworkModePayload:
+		if v.Mode == "" {
+			return "", "", false
+		}
+		return v.Token, v.Mode, true
+	case *NetworkModePayload:
+		if v == nil || v.Mode == "" {
+			return "", "", false
+		}
+		return v.Token, v.Mode, true
+	case map[string]interface{}:
+		token, _ := v["token"].(string)
+		mode, _ := v["mode"].(string)
+		if mode == "" {
+			return "", "", false
+		}
+		return token, mode, true
+	default:
+		return "", "", false
+	}
+}
+
+func parseTokenPayload(msg interface{}) (string, bool) {
+	switch v := msg.(type) {
+	case NetworkHeartbeatPayload:
+		if v.Token == "" {
+			return "", false
+		}
+		return v.Token, true
+	case *NetworkHeartbeatPayload:
+		if v == nil || v.Token == "" {
+			return "", false
+		}
+		return v.Token, true
+	case map[string]interface{}:
+		token, _ := v["token"].(string)
+		if token == "" {
+			return "", false
+		}
+		return token, true
+	default:
+		return "", false
+	}
+}
+
+func isValidNetworkMode(mode string) bool {
+	switch mode {
+	case "auto", "lan", "wan", "latency":
+		return true
+	default:
+		return false
 	}
 }
 

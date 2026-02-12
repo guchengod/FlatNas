@@ -116,9 +116,15 @@ const useGlobalAudio = ref(false);
 const loading = ref(false);
 const error = ref("");
 
-const syncPlayerState = computed(() => props.widget.data?.syncPlayerState === true);
-const isMiniSmall = computed(() => props.widget.colSpan === 1 && props.widget.rowSpan === 1);
-const isTallMini = computed(() => props.widget.colSpan === 1 && props.widget.rowSpan === 3);
+const syncPlayerState = computed(
+  () => props.widget.data?.syncPlayerState === true,
+);
+const isMiniSmall = computed(
+  () => props.widget.colSpan === 1 && props.widget.rowSpan === 1,
+);
+const isTallMini = computed(
+  () => props.widget.colSpan === 1 && props.widget.rowSpan === 3,
+);
 const browseTracks = ref<Track[]>([]);
 const miniLoading = ref(false);
 const miniError = ref("");
@@ -128,7 +134,9 @@ const bufferedTime = ref(0);
 const audioObjectUrl = ref<string | null>(null);
 const audioObjectUrlTrackId = ref<string | null>(null);
 
-const miniListOpen = computed(() => (isTallMini.value ? true : miniPanelOpen.value));
+const miniListOpen = computed(() =>
+  isTallMini.value ? true : miniPanelOpen.value,
+);
 const currentCoverUrl = computed(() => {
   if (currentTrackDetail.value) {
     return getCoverUrl(currentTrackDetail.value);
@@ -181,7 +189,9 @@ const login = async () => {
     if (res.ok) {
       const data = await res.json();
       if (data.token) {
-        const targetWidget = store.widgets.find((w) => w.id === props.widget.id);
+        const targetWidget = store.widgets.find(
+          (w) => w.id === props.widget.id,
+        );
         if (targetWidget && targetWidget.data) {
           targetWidget.data.token = data.token;
           store.saveData();
@@ -224,14 +234,17 @@ const fetchPlayerState = async () => {
         playerState.value.currentTime = data.progress || data.currentTime || 0;
       }
       playerState.value.volume = data.volume ?? 0.7;
-      playerState.value.currentTrackId = data.currentTrack?.id || data.currentTrackId;
+      playerState.value.currentTrackId =
+        data.currentTrack?.id || data.currentTrackId;
       if (data.lyrics || data.currentTrack?.lyrics) {
         playerState.value.lyrics = data.lyrics || data.currentTrack?.lyrics;
       }
 
       // Sync queue if provided
       if (data.queue && Array.isArray(data.queue)) {
-        tracks.value = data.queue.map(normalizeTrack).filter(Boolean) as Track[];
+        tracks.value = data.queue
+          .map(normalizeTrack)
+          .filter(Boolean) as Track[];
       }
 
       // If we have a current track but it's not in the tracks list, we might want to fetch it or add it
@@ -280,7 +293,8 @@ const playAll = async () => {
     if (syncPlayerState.value) fetchPlayerState();
   } catch (e) {
     console.error("Play all failed", e);
-    error.value = "播放全部失败: " + (e instanceof Error ? e.message : String(e));
+    error.value =
+      "播放全部失败: " + (e instanceof Error ? e.message : String(e));
   } finally {
     loading.value = false;
   }
@@ -376,7 +390,9 @@ const normalizeTrack = (t: unknown): Track | null => {
   const obj = t as Record<string, unknown>;
 
   const trackObj =
-    obj.track && typeof obj.track === "object" ? (obj.track as Record<string, unknown>) : obj;
+    obj.track && typeof obj.track === "object"
+      ? (obj.track as Record<string, unknown>)
+      : obj;
 
   const toIdString = (v: unknown): string | null => {
     if (typeof v === "string") return v;
@@ -385,7 +401,12 @@ const normalizeTrack = (t: unknown): Track | null => {
   };
 
   const id = toIdString(
-    trackObj.id ?? obj.trackId ?? trackObj.trackId ?? obj.songId ?? trackObj.songId ?? obj.id,
+    trackObj.id ??
+      obj.trackId ??
+      trackObj.trackId ??
+      obj.songId ??
+      trackObj.songId ??
+      obj.id,
   );
   const title =
     typeof trackObj.title === "string"
@@ -426,7 +447,8 @@ const normalizeTrack = (t: unknown): Track | null => {
         ? trackObj.artist
         : trackObj.artist &&
             typeof trackObj.artist === "object" &&
-            typeof (trackObj.artist as Record<string, unknown>).name === "string"
+            typeof (trackObj.artist as Record<string, unknown>).name ===
+              "string"
           ? ((trackObj.artist as Record<string, unknown>).name as string)
           : typeof trackObj.singer === "string"
             ? (trackObj.singer as string)
@@ -519,10 +541,16 @@ const normalizeTrack = (t: unknown): Track | null => {
 };
 
 const authedJson = async (url: string, init?: RequestInit) => {
-  const res = await fetch(url, { ...init, headers: { ...getHeaders(), ...(init?.headers || {}) } });
+  const res = await fetch(url, {
+    ...init,
+    headers: { ...getHeaders(), ...(init?.headers || {}) },
+  });
   if (res.status !== 401) return res;
   await login();
-  return fetch(url, { ...init, headers: { ...getHeaders(), ...(init?.headers || {}) } });
+  return fetch(url, {
+    ...init,
+    headers: { ...getHeaders(), ...(init?.headers || {}) },
+  });
 };
 
 const fetchBrowseTracks = async () => {
@@ -547,7 +575,9 @@ const fetchBrowseTracks = async () => {
 const setQueueAndPlay = (nextQueue: Track[], startTrackId?: string) => {
   if (!nextQueue.length) return;
   tracks.value = nextQueue;
-  const start = startTrackId ? nextQueue.find((t) => t.id === startTrackId) : nextQueue[0];
+  const start = startTrackId
+    ? nextQueue.find((t) => t.id === startTrackId)
+    : nextQueue[0];
   if (!start) return;
   playTrack(start);
 };
@@ -632,7 +662,11 @@ const fetchAlbums = async () => {
 };
 
 const fetchTracks = async () => {
-  if (!props.widget.data?.token && props.widget.data?.username && props.widget.data?.password) {
+  if (
+    !props.widget.data?.token &&
+    props.widget.data?.username &&
+    props.widget.data?.password
+  ) {
     await login();
   }
 
@@ -697,7 +731,9 @@ const fetchTracks = async () => {
 
         if (!res.ok) {
           // Try search by artist name
-          const artist = artists.value.find((a) => a.id === currentArtistId.value);
+          const artist = artists.value.find(
+            (a) => a.id === currentArtistId.value,
+          );
           if (artist && artist.name) {
             url = `${API_BASE.value}/tracks?search=${encodeURIComponent(artist.name)}&take=1000`;
             res = await fetch(url, { headers: getHeaders() });
@@ -722,16 +758,22 @@ const fetchTracks = async () => {
       });
     }
 
-    const isDefaultApi = API_BASE.value === "/api" || API_BASE.value === "/api/";
+    const isDefaultApi =
+      API_BASE.value === "/api" || API_BASE.value === "/api/";
     const allowMusicListFallback =
       isDefaultApi && !currentPlaylistId.value && libraryMode.value === "songs";
 
-    if (!res.ok && !allowMusicListFallback) throw new Error(`API Error: ${res.status}`);
+    if (!res.ok && !allowMusicListFallback)
+      throw new Error(`API Error: ${res.status}`);
 
     const list = res.ok ? normalizeList(await res.json()) : [];
 
     // Extra fallback for albums if list is empty
-    if (list.length === 0 && libraryMode.value === "albums" && currentAlbumId.value) {
+    if (
+      list.length === 0 &&
+      libraryMode.value === "albums" &&
+      currentAlbumId.value
+    ) {
       const album = albums.value.find((a) => a.id === currentAlbumId.value);
       if (album && album.title) {
         const searchUrl = `${API_BASE.value}/tracks?search=${encodeURIComponent(album.title)}&take=1000`;
@@ -740,7 +782,9 @@ const fetchTracks = async () => {
           const searchData = await searchRes.json();
           const searchList = normalizeList(searchData);
           if (searchList.length > 0) {
-            tracks.value = searchList.map(normalizeTrack).filter(Boolean) as Track[];
+            tracks.value = searchList
+              .map(normalizeTrack)
+              .filter(Boolean) as Track[];
             loading.value = false;
             return;
           }
@@ -752,10 +796,14 @@ const fetchTracks = async () => {
 
     // 如果收藏夹为空，尝试获取普通歌单作为后备 (only if not selecting specific playlist)
     if (tracks.value.length === 0 && !currentPlaylistId.value) {
-      let fallbackRes = await fetch(`${API_BASE.value}/songs?take=100`, { headers: getHeaders() });
+      let fallbackRes = await fetch(`${API_BASE.value}/songs?take=100`, {
+        headers: getHeaders(),
+      });
       if (!fallbackRes.ok)
-        fallbackRes = await fetch(`${API_BASE.value}/tracks?take=100`, { headers: getHeaders() });
-      
+        fallbackRes = await fetch(`${API_BASE.value}/tracks?take=100`, {
+          headers: getHeaders(),
+        });
+
       if (fallbackRes.ok) {
         const fbData = await fallbackRes.json();
         const fbList = normalizeList(fbData);
@@ -765,17 +813,19 @@ const fetchTracks = async () => {
 
     if (tracks.value.length === 0 && allowMusicListFallback) {
       try {
-        const res = await fetch(`${API_BASE.value}/music-list`, { headers: getHeaders() });
+        const res = await fetch(`${API_BASE.value}/music-list`, {
+          headers: getHeaders(),
+        });
         if (res.ok) {
           const files = await res.json();
           if (Array.isArray(files)) {
             tracks.value = files.map((file: string) => ({
               id: file,
-              title: file.split('/').pop() || file,
+              title: file.split("/").pop() || file,
               artist: "Unknown Artist",
               album: "Unknown Album",
               duration: 0,
-              coverUrl: undefined
+              coverUrl: undefined,
             }));
           }
         }
@@ -885,7 +935,8 @@ const loadViaBlob = async (trackId: string, startTime = 0, autoPlay = true) => {
   }
 
   if (!res || !res.ok) {
-    if (lastErr) throw new Error(`Stream API Error ${lastErr.status}: ${lastErr.detail}`);
+    if (lastErr)
+      throw new Error(`Stream API Error ${lastErr.status}: ${lastErr.detail}`);
     throw new Error("Stream API Error: 请求失败");
   }
 
@@ -913,7 +964,9 @@ const loadViaBlob = async (trackId: string, startTime = 0, autoPlay = true) => {
       error.value = ""; // Clear error on success
     } catch (e) {
       playerState.value.isPlaying = false;
-      throw new Error(`Playback failed: ${(e as Error).name} - ${(e as Error).message}`);
+      throw new Error(
+        `Playback failed: ${(e as Error).name} - ${(e as Error).message}`,
+      );
     }
   }
 };
@@ -923,8 +976,13 @@ const trackDetailById = ref<Record<string, Track>>({});
 const fetchTrackDetail = async (trackId: string) => {
   if (trackDetailById.value[trackId]) return;
   try {
-    let res = await authedJson(`${API_BASE.value}/tracks/${encodeURIComponent(trackId)}`);
-    if (!res.ok) res = await authedJson(`${API_BASE.value}/songs/${encodeURIComponent(trackId)}`);
+    let res = await authedJson(
+      `${API_BASE.value}/tracks/${encodeURIComponent(trackId)}`,
+    );
+    if (!res.ok)
+      res = await authedJson(
+        `${API_BASE.value}/songs/${encodeURIComponent(trackId)}`,
+      );
     if (!res.ok) return;
     const data = await res.json();
     const normalized = normalizeTrack(data);
@@ -952,8 +1010,12 @@ const resolveUrl = (url?: string): string | undefined => {
   }
 
   const baseUrl = API_BASE.value.replace(/\/api(\/v\d+)?$/, "");
-  const fullUrl = url.startsWith("/") ? `${baseUrl}${url}` : `${baseUrl}/${url}`;
-  return token ? `${fullUrl}${fullUrl.includes("?") ? "&" : "?"}token=${token}` : fullUrl;
+  const fullUrl = url.startsWith("/")
+    ? `${baseUrl}${url}`
+    : `${baseUrl}/${url}`;
+  return token
+    ? `${fullUrl}${fullUrl.includes("?") ? "&" : "?"}token=${token}`
+    : fullUrl;
 };
 
 const getCoverUrl = (track: Track): string | undefined => {
@@ -1101,7 +1163,8 @@ const handleMissingTrack = async (track: Track) => {
   playerState.value.isPlaying = false;
 
   if (tracks.value.length > 0) {
-    const next = tracks.value[Math.min(idx, tracks.value.length - 1)] || tracks.value[0];
+    const next =
+      tracks.value[Math.min(idx, tracks.value.length - 1)] || tracks.value[0];
     if (next) {
       await playTrack(next);
     }
@@ -1109,6 +1172,15 @@ const handleMissingTrack = async (track: Track) => {
   }
 
   await fetchTracks();
+};
+
+let playRequestId = 0;
+let switchTimer: ReturnType<typeof setTimeout> | null = null;
+const scheduleSwitch = (fn: () => void | Promise<void>) => {
+  if (switchTimer) clearTimeout(switchTimer);
+  switchTimer = setTimeout(() => {
+    void fn();
+  }, 120);
 };
 
 const playTrack = async (
@@ -1127,23 +1199,30 @@ const playTrack = async (
   store.activeMusicPlayer = "music-widget";
 
   if (audioRef.value) {
+    const player = audioRef.value;
+    const requestId = ++playRequestId;
+    player.pause();
     // If we are about to load a new blob, and the current src is a blob (even from previous instance), revoke it to prevent leaks
-    if (audioRef.value.src && audioRef.value.src.startsWith("blob:")) {
-      URL.revokeObjectURL(audioRef.value.src);
+    if (player.src && player.src.startsWith("blob:")) {
+      URL.revokeObjectURL(player.src);
     }
     revokeAudioObjectUrl();
 
     // Use direct streaming instead of Blob to avoid download delay
     revokeAudioObjectUrl();
-    
+
     let url = "";
     // Helper to encode path segments
     const encodePath = (path: string) => {
-      return path.split("/").map(p => encodeURIComponent(p)).join("/");
+      return path
+        .split("/")
+        .map((p) => encodeURIComponent(p))
+        .join("/");
     };
 
     // If we are using the default API (FlatNas) and the ID looks like a file path
-    const isDefaultApi = API_BASE.value === "/api" || API_BASE.value === "/api/";
+    const isDefaultApi =
+      API_BASE.value === "/api" || API_BASE.value === "/api/";
     // Simple check if it looks like a file (has extension)
     const isFile = /\.[a-zA-Z0-9]{2,4}$/.test(track.id);
 
@@ -1160,18 +1239,32 @@ const playTrack = async (
       }
     }
 
-    audioRef.value.src = url;
-    audioRef.value.currentTime = startTime;
+    player.src = url;
+    player.currentTime = startTime;
+    await nextTick();
+    if (requestId !== playRequestId) return;
 
     if (autoPlay) {
       try {
-        await audioRef.value.play();
+        const promise = player.play();
+        if (promise !== undefined) await promise;
+        if (requestId !== playRequestId) return;
       } catch (e) {
+        if (requestId !== playRequestId) return;
+        const msg = (e as Error)?.message || "";
+        if (
+          msg.includes("interrupted by a new load request") ||
+          msg.includes("play() request was interrupted")
+        ) {
+          return;
+        }
         console.error("Play failed", e);
         // Try fallback if primary method fails?
         // For now just report error
-        const msg = (e as Error).message;
-        if (msg.includes("NotAllowedError") || msg.toLowerCase().includes("playback failed")) {
+        if (
+          msg.includes("NotAllowedError") ||
+          msg.toLowerCase().includes("playback failed")
+        ) {
           playerState.value.isPlaying = false;
         }
         error.value = `播放出错: ${msg}`;
@@ -1187,7 +1280,7 @@ const quickStart = async () => {
   return true;
 };
 
-const togglePlay = () => {
+const togglePlay = async () => {
   if (!audioRef.value) return;
   if (!playerState.value.currentTrackId) {
     const first = tracks.value[0];
@@ -1204,23 +1297,50 @@ const togglePlay = () => {
   if (playerState.value.isPlaying) {
     audioRef.value.pause();
     playerState.value.isPlaying = false;
+    playRequestId++;
     // apiPause();
   } else {
-    audioRef.value.play().catch(() => {});
-    playerState.value.isPlaying = true;
-    store.activeMusicPlayer = "music-widget";
+    try {
+      const requestId = ++playRequestId;
+      const promise = audioRef.value.play();
+      if (promise !== undefined) await promise;
+      if (requestId !== playRequestId) return;
+      playerState.value.isPlaying = true;
+      store.activeMusicPlayer = "music-widget";
+    } catch (e) {
+      const msg = (e as Error)?.message || "";
+      if (
+        msg.includes("interrupted by a new load request") ||
+        msg.includes("play() request was interrupted")
+      ) {
+        return;
+      }
+    }
     // apiPlay();
   }
 };
 
 const toggleMode = () => {
-  const modes: ("sequence" | "random" | "single")[] = ["sequence", "random", "single"];
-  const nextIndex = (modes.indexOf(playerState.value.playbackMode) + 1) % modes.length;
-  playerState.value.playbackMode = modes[nextIndex] as PlayerState["playbackMode"];
+  const modes: ("sequence" | "random" | "single")[] = [
+    "sequence",
+    "random",
+    "single",
+  ];
+  const nextIndex =
+    (modes.indexOf(playerState.value.playbackMode) + 1) % modes.length;
+  playerState.value.playbackMode = modes[
+    nextIndex
+  ] as PlayerState["playbackMode"];
 };
 
 const nextTrack = (isAuto = false) => {
   if (!tracks.value.length) return;
+  if (!isAuto) {
+    scheduleSwitch(() => {
+      nextTrack(true);
+    });
+    return;
+  }
 
   // Single Loop (only triggers on auto-advance, user click still goes next)
   if (isAuto && playerState.value.playbackMode === "single") {
@@ -1241,7 +1361,9 @@ const nextTrack = (isAuto = false) => {
   }
 
   // Sequence
-  const idx = tracks.value.findIndex((t) => t.id === playerState.value.currentTrackId);
+  const idx = tracks.value.findIndex(
+    (t) => t.id === playerState.value.currentTrackId,
+  );
   const nextIdx = (idx + 1) % tracks.value.length;
   const track = tracks.value[nextIdx];
   if (track) playTrack(track);
@@ -1250,11 +1372,15 @@ const nextTrack = (isAuto = false) => {
 
 const prevTrack = () => {
   if (!tracks.value.length) return;
-  const idx = tracks.value.findIndex((t) => t.id === playerState.value.currentTrackId);
-  const prevIdx = (idx - 1 + tracks.value.length) % tracks.value.length;
-  const track = tracks.value[prevIdx];
-  if (track) playTrack(track);
-  if (syncPlayerState.value) void apiPrev();
+  scheduleSwitch(() => {
+    const idx = tracks.value.findIndex(
+      (t) => t.id === playerState.value.currentTrackId,
+    );
+    const prevIdx = (idx - 1 + tracks.value.length) % tracks.value.length;
+    const track = tracks.value[prevIdx];
+    if (track) playTrack(track);
+    if (syncPlayerState.value) void apiPrev();
+  });
 };
 
 // --- Storage Logic ---
@@ -1310,14 +1436,17 @@ const restorePlaybackState = async () => {
     // Restore player config
     if (saved.playerState) {
       playerState.value.volume = saved.playerState.volume ?? 0.7;
-      playerState.value.playbackMode = saved.playerState.playbackMode || "sequence";
+      playerState.value.playbackMode =
+        saved.playerState.playbackMode || "sequence";
 
       // If we have a track ID, we need to load tracks first then play
       if (saved.playerState.currentTrackId) {
         // Fetch tracks based on restored context
         await fetchTracks();
 
-        const track = tracks.value.find((t) => t.id === saved.playerState.currentTrackId);
+        const track = tracks.value.find(
+          (t) => t.id === saved.playerState.currentTrackId,
+        );
         if (track) {
           // Play from saved time
           // If it was playing, try to autoplay. If paused, just load.
@@ -1364,7 +1493,8 @@ const onVolumeChange = (e: Event) => {
 };
 
 const onAudioPlay = () => {
-  if (syncPlayerState.value) void apiPlay(playerState.value.currentTrackId || undefined);
+  if (syncPlayerState.value)
+    void apiPlay(playerState.value.currentTrackId || undefined);
 };
 
 const onAudioPause = () => {
@@ -1473,7 +1603,9 @@ const stopPolling = () => {
 };
 
 onMounted(() => {
-  const globalEl = document.getElementById("flatnas-global-audio") as HTMLAudioElement | null;
+  const globalEl = document.getElementById(
+    "flatnas-global-audio",
+  ) as HTMLAudioElement | null;
   if (globalEl) {
     useGlobalAudio.value = true;
     audioRef.value = globalEl;
@@ -1500,12 +1632,14 @@ onMounted(() => {
   }
   if (isMiniSmall.value || isTallMini.value) {
     void fetchBrowseTracks();
-    if (!syncPlayerState.value && store.appConfig.autoPlayMusic) void playAllSongs();
+    if (!syncPlayerState.value && store.appConfig.autoPlayMusic)
+      void playAllSongs();
   }
 
   // Restore state logic
   // Restore if not syncing with server AND (not using global audio OR global audio is empty)
-  const isGlobalPlaying = useGlobalAudio.value && audioRef.value && !audioRef.value.paused;
+  const isGlobalPlaying =
+    useGlobalAudio.value && audioRef.value && !audioRef.value.paused;
 
   if (!syncPlayerState.value && !isGlobalPlaying) {
     restorePlaybackState().then((restored) => {
@@ -1582,7 +1716,9 @@ watch(syncPlayerState, (enabled) => {
 <template>
   <div
     class="w-full h-full backdrop-blur-md border border-white/20 rounded-2xl flex flex-col overflow-hidden shadow-lg hover:shadow-xl transition-all group relative"
-    :style="{ backgroundColor: `rgba(255, 255, 255, ${(widget.opacity ?? 0.1) * 0.4})` }"
+    :style="{
+      backgroundColor: `rgba(255, 255, 255, ${(widget.opacity ?? 0.1) * 0.4})`,
+    }"
   >
     <!-- Background Layer -->
     <div
@@ -1590,7 +1726,10 @@ watch(syncPlayerState, (enabled) => {
       class="absolute inset-0 bg-cover bg-center transition-all duration-700 blur-md opacity-80 pointer-events-none"
       :style="{ backgroundImage: `url('${currentCoverUrl}')` }"
     ></div>
-    <div v-else class="absolute inset-0 bg-white/5 transition-all pointer-events-none"></div>
+    <div
+      v-else
+      class="absolute inset-0 bg-white/5 transition-all pointer-events-none"
+    ></div>
 
     <!-- Audio Element (Hidden) -->
     <audio
@@ -1608,7 +1747,10 @@ watch(syncPlayerState, (enabled) => {
     <template v-if="widget.colSpan === 1 && widget.rowSpan === 1">
       <!-- Mini Mode (1x1) -->
       <div class="w-full h-full relative z-10">
-        <div class="aplayer aplayer-mini" :class="{ 'aplayer-withlist': miniListOpen }">
+        <div
+          class="aplayer aplayer-mini"
+          :class="{ 'aplayer-withlist': miniListOpen }"
+        >
           <div class="aplayer-body">
             <div class="aplayer-pic">
               <button
@@ -1616,12 +1758,16 @@ watch(syncPlayerState, (enabled) => {
                 @click.stop="togglePlay"
                 :title="playerState.isPlaying ? '暂停' : '播放'"
                 :style="
-                  currentCoverUrl ? { backgroundImage: `url('${currentCoverUrl}')` } : undefined
+                  currentCoverUrl
+                    ? { backgroundImage: `url('${currentCoverUrl}')` }
+                    : undefined
                 "
               >
-                <span class="aplayer-pic-icon" :class="{ 'is-playing': playerState.isPlaying }">{{
-                  playerState.isPlaying ? ICON_PAUSE : ICON_PLAY
-                }}</span>
+                <span
+                  class="aplayer-pic-icon"
+                  :class="{ 'is-playing': playerState.isPlaying }"
+                  >{{ playerState.isPlaying ? ICON_PAUSE : ICON_PLAY }}</span
+                >
               </button>
             </div>
 
@@ -1629,35 +1775,55 @@ watch(syncPlayerState, (enabled) => {
               <div class="aplayer-music-text-wrap">
                 <span
                   class="aplayer-title"
-                  :class="{ 'aplayer-marquee': (currentTrack?.title || '').length > 15 }"
+                  :class="{
+                    'aplayer-marquee': (currentTrack?.title || '').length > 15,
+                  }"
                 >
                   {{ currentTrack?.title || "选择播放" }}
-                  <span v-if="(currentTrack?.title || '').length > 15" class="ml-8">{{
-                    currentTrack?.title
-                  }}</span>
+                  <span
+                    v-if="(currentTrack?.title || '').length > 15"
+                    class="ml-8"
+                    >{{ currentTrack?.title }}</span
+                  >
                 </span>
               </div>
               <div class="aplayer-music-text-wrap">
                 <span
                   class="aplayer-author"
-                  :class="{ 'aplayer-marquee': currentAlbumArtistText.length > 20 }"
+                  :class="{
+                    'aplayer-marquee': currentAlbumArtistText.length > 20,
+                  }"
                 >
                   {{ currentAlbumArtistText }}
-                  <span v-if="currentAlbumArtistText.length > 20" class="ml-8">{{
-                    currentAlbumArtistText
-                  }}</span>
+                  <span
+                    v-if="currentAlbumArtistText.length > 20"
+                    class="ml-8"
+                    >{{ currentAlbumArtistText }}</span
+                  >
                 </span>
               </div>
-              <div v-if="error" class="text-xs text-red-400 mt-0.5 truncate" :title="error">
+              <div
+                v-if="error"
+                class="text-xs text-red-400 mt-0.5 truncate"
+                :title="error"
+              >
                 {{ error }}
               </div>
 
               <div class="aplayer-time-main">
                 <div class="aplayer-controls">
-                  <button class="aplayer-btn" @click.stop="prevTrack" title="上一首">
+                  <button
+                    class="aplayer-btn"
+                    @click.stop="prevTrack"
+                    title="上一首"
+                  >
                     {{ ICON_PREV }}
                   </button>
-                  <button class="aplayer-btn" @click.stop="nextTrack()" title="下一首">
+                  <button
+                    class="aplayer-btn"
+                    @click.stop="nextTrack()"
+                    title="下一首"
+                  >
                     {{ ICON_NEXT }}
                   </button>
                 </div>
@@ -1700,7 +1866,11 @@ watch(syncPlayerState, (enabled) => {
                         />
                       </svg>
                     </button>
-                    <div v-show="miniVolumeOpen" class="aplayer-volume-panel" @click.stop>
+                    <div
+                      v-show="miniVolumeOpen"
+                      class="aplayer-volume-panel"
+                      @click.stop
+                    >
                       <input
                         type="range"
                         min="0"
@@ -1718,8 +1888,14 @@ watch(syncPlayerState, (enabled) => {
               <div class="aplayer-bar-container">
                 <div class="aplayer-bar-wrap" @click.stop="onBarClick">
                   <div class="aplayer-bar">
-                    <div class="aplayer-loaded" :style="{ width: `${loadedPercent}%` }"></div>
-                    <div class="aplayer-played" :style="{ width: `${playedPercent}%` }">
+                    <div
+                      class="aplayer-loaded"
+                      :style="{ width: `${loadedPercent}%` }"
+                    ></div>
+                    <div
+                      class="aplayer-played"
+                      :style="{ width: `${playedPercent}%` }"
+                    >
                       <span class="aplayer-thumb"></span>
                     </div>
                     <input
@@ -1735,7 +1911,9 @@ watch(syncPlayerState, (enabled) => {
                     />
                   </div>
                 </div>
-                <span class="aplayer-ptime">{{ formatTime(playerState.currentTime) }}</span>
+                <span class="aplayer-ptime">{{
+                  formatTime(playerState.currentTime)
+                }}</span>
               </div>
             </div>
           </div>
@@ -1745,7 +1923,10 @@ watch(syncPlayerState, (enabled) => {
 
     <template v-else-if="widget.colSpan === 1 && widget.rowSpan === 3">
       <div class="w-full h-full relative z-10">
-        <div class="aplayer aplayer-mini is-tall" :class="{ 'aplayer-withlist': miniListOpen }">
+        <div
+          class="aplayer aplayer-mini is-tall"
+          :class="{ 'aplayer-withlist': miniListOpen }"
+        >
           <div class="aplayer-body">
             <div class="aplayer-pic">
               <button
@@ -1753,12 +1934,16 @@ watch(syncPlayerState, (enabled) => {
                 @click.stop="togglePlay"
                 :title="playerState.isPlaying ? '暂停' : '播放'"
                 :style="
-                  currentCoverUrl ? { backgroundImage: `url('${currentCoverUrl}')` } : undefined
+                  currentCoverUrl
+                    ? { backgroundImage: `url('${currentCoverUrl}')` }
+                    : undefined
                 "
               >
-                <span class="aplayer-pic-icon" :class="{ 'is-playing': playerState.isPlaying }">{{
-                  playerState.isPlaying ? ICON_PAUSE : ICON_PLAY
-                }}</span>
+                <span
+                  class="aplayer-pic-icon"
+                  :class="{ 'is-playing': playerState.isPlaying }"
+                  >{{ playerState.isPlaying ? ICON_PAUSE : ICON_PLAY }}</span
+                >
               </button>
             </div>
 
@@ -1766,32 +1951,48 @@ watch(syncPlayerState, (enabled) => {
               <div class="aplayer-music-text-wrap">
                 <span
                   class="aplayer-title"
-                  :class="{ 'aplayer-marquee': (currentTrack?.title || '').length > 15 }"
+                  :class="{
+                    'aplayer-marquee': (currentTrack?.title || '').length > 15,
+                  }"
                 >
                   {{ currentTrack?.title || "选择播放" }}
-                  <span v-if="(currentTrack?.title || '').length > 15" class="ml-8">{{
-                    currentTrack?.title
-                  }}</span>
+                  <span
+                    v-if="(currentTrack?.title || '').length > 15"
+                    class="ml-8"
+                    >{{ currentTrack?.title }}</span
+                  >
                 </span>
               </div>
               <div class="aplayer-music-text-wrap">
                 <span
                   class="aplayer-author"
-                  :class="{ 'aplayer-marquee': currentAlbumArtistText.length > 20 }"
+                  :class="{
+                    'aplayer-marquee': currentAlbumArtistText.length > 20,
+                  }"
                 >
                   {{ currentAlbumArtistText }}
-                  <span v-if="currentAlbumArtistText.length > 20" class="ml-8">{{
-                    currentAlbumArtistText
-                  }}</span>
+                  <span
+                    v-if="currentAlbumArtistText.length > 20"
+                    class="ml-8"
+                    >{{ currentAlbumArtistText }}</span
+                  >
                 </span>
               </div>
 
               <div class="aplayer-time-main">
                 <div class="aplayer-controls">
-                  <button class="aplayer-btn" @click.stop="prevTrack" title="上一首">
+                  <button
+                    class="aplayer-btn"
+                    @click.stop="prevTrack"
+                    title="上一首"
+                  >
                     {{ ICON_PREV }}
                   </button>
-                  <button class="aplayer-btn" @click.stop="nextTrack()" title="下一首">
+                  <button
+                    class="aplayer-btn"
+                    @click.stop="nextTrack()"
+                    title="下一首"
+                  >
                     {{ ICON_NEXT }}
                   </button>
                 </div>
@@ -1834,7 +2035,11 @@ watch(syncPlayerState, (enabled) => {
                         />
                       </svg>
                     </button>
-                    <div v-show="miniVolumeOpen" class="aplayer-volume-panel" @click.stop>
+                    <div
+                      v-show="miniVolumeOpen"
+                      class="aplayer-volume-panel"
+                      @click.stop
+                    >
                       <input
                         type="range"
                         min="0"
@@ -1852,8 +2057,14 @@ watch(syncPlayerState, (enabled) => {
               <div class="aplayer-bar-container">
                 <div class="aplayer-bar-wrap" @click.stop="onBarClick">
                   <div class="aplayer-bar">
-                    <div class="aplayer-loaded" :style="{ width: `${loadedPercent}%` }"></div>
-                    <div class="aplayer-played" :style="{ width: `${playedPercent}%` }">
+                    <div
+                      class="aplayer-loaded"
+                      :style="{ width: `${loadedPercent}%` }"
+                    ></div>
+                    <div
+                      class="aplayer-played"
+                      :style="{ width: `${playedPercent}%` }"
+                    >
                       <span class="aplayer-thumb"></span>
                     </div>
                     <input
@@ -1869,7 +2080,9 @@ watch(syncPlayerState, (enabled) => {
                     />
                   </div>
                 </div>
-                <span class="aplayer-ptime">{{ formatTime(playerState.currentTime) }}</span>
+                <span class="aplayer-ptime">{{
+                  formatTime(playerState.currentTime)
+                }}</span>
               </div>
             </div>
           </div>
@@ -1877,7 +2090,9 @@ watch(syncPlayerState, (enabled) => {
           <div v-show="miniListOpen" class="aplayer-list" @click.stop>
             <div class="aplayer-list-body">
               <div v-if="miniLoading" class="aplayer-list-state">加载中...</div>
-              <div v-else-if="miniError" class="aplayer-list-state is-error">{{ miniError }}</div>
+              <div v-else-if="miniError" class="aplayer-list-state is-error">
+                {{ miniError }}
+              </div>
 
               <div v-else class="aplayer-list-state">
                 已加载全部歌曲（{{ browseTracks.length }}）
@@ -1896,7 +2111,9 @@ watch(syncPlayerState, (enabled) => {
           class="flex flex-col min-w-0 transition-all duration-300 w-[39.2%] border-r border-white/10"
         >
           <!-- Now Playing Info & Progress -->
-          <div class="border-b border-white/10 bg-white/5 flex flex-col shrink-0">
+          <div
+            class="border-b border-white/10 bg-white/5 flex flex-col shrink-0"
+          >
             <!-- Info -->
             <div class="p-3 flex gap-1.5 items-center relative">
               <div
@@ -1907,10 +2124,16 @@ watch(syncPlayerState, (enabled) => {
                   :src="currentCoverUrl"
                   class="w-full h-full object-cover"
                 />
-                <img v-else src="/daoliyu.png" class="w-6 h-6 object-contain opacity-50" />
+                <img
+                  v-else
+                  src="/daoliyu.png"
+                  class="w-6 h-6 object-contain opacity-50"
+                />
               </div>
               <div class="flex-1 min-w-0 flex flex-col">
-                <div class="font-bold text-white truncate text-sm leading-tight">
+                <div
+                  class="font-bold text-white truncate text-sm leading-tight"
+                >
                   {{ currentTrack?.title || "道理鱼音乐" }}
                 </div>
                 <div class="text-xs text-white/60 truncate leading-tight">
@@ -1954,13 +2177,17 @@ watch(syncPlayerState, (enabled) => {
                   @change="onSeekCommit"
                   class="flex-1 h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-blue-400 min-w-0"
                 />
-                <span class="tabular-nums w-9">{{ formatTime(playerState.duration) }}</span>
+                <span class="tabular-nums w-9">{{
+                  formatTime(playerState.duration)
+                }}</span>
               </div>
             </div>
           </div>
 
           <!-- Library Selection -->
-          <div class="px-3 py-1.5 border-b border-white/10 bg-white/5 flex flex-col gap-1.5">
+          <div
+            class="px-3 py-1.5 border-b border-white/10 bg-white/5 flex flex-col gap-1.5"
+          >
             <!-- Mode Selector -->
             <div class="flex gap-1 overflow-x-auto custom-scrollbar pb-0.5">
               <button
@@ -1986,16 +2213,28 @@ watch(syncPlayerState, (enabled) => {
               class="w-full bg-black/20 text-white/90 text-xs rounded px-2 py-1 outline-none border border-white/10 focus:border-blue-500/50 hover:bg-black/30 transition-colors"
             >
               <option :value="null" class="text-black">请选择歌单...</option>
-              <option v-for="p in playlists" :key="p.id" :value="p.id" class="text-black">
+              <option
+                v-for="p in playlists"
+                :key="p.id"
+                :value="p.id"
+                class="text-black"
+              >
                 {{ p.name }}
               </option>
             </select>
           </div>
 
           <!-- Playlist -->
-          <div class="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar" @wheel.stop>
-            <div v-if="loading" class="p-4 text-center text-xs text-white/40">加载中...</div>
-            <div v-else-if="error" class="p-4 text-center text-xs text-red-400">{{ error }}</div>
+          <div
+            class="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar"
+            @wheel.stop
+          >
+            <div v-if="loading" class="p-4 text-center text-xs text-white/40">
+              加载中...
+            </div>
+            <div v-else-if="error" class="p-4 text-center text-xs text-red-400">
+              {{ error }}
+            </div>
             <div v-else>
               <div
                 v-if="libraryMode === 'artists' && !currentArtistId"
@@ -2022,9 +2261,10 @@ watch(syncPlayerState, (enabled) => {
                       👤
                     </div>
                   </div>
-                  <span class="text-[10px] text-white/80 text-center truncate w-full">{{
-                    a.name
-                  }}</span>
+                  <span
+                    class="text-[10px] text-white/80 text-center truncate w-full"
+                    >{{ a.name }}</span
+                  >
                 </div>
               </div>
 
@@ -2053,9 +2293,10 @@ watch(syncPlayerState, (enabled) => {
                       💿
                     </div>
                   </div>
-                  <span class="text-[10px] text-white/80 text-center truncate w-full">{{
-                    a.title
-                  }}</span>
+                  <span
+                    class="text-[10px] text-white/80 text-center truncate w-full"
+                    >{{ a.title }}</span
+                  >
                 </div>
               </div>
 
@@ -2073,14 +2314,22 @@ watch(syncPlayerState, (enabled) => {
                   </button>
                   <div class="flex items-center gap-2 overflow-hidden flex-1">
                     <img
-                      v-if="artists.find((a) => a.id === currentArtistId)?.coverUrl"
+                      v-if="
+                        artists.find((a) => a.id === currentArtistId)?.coverUrl
+                      "
                       :src="
-                        store.getAssetUrl(artists.find((a) => a.id === currentArtistId)?.coverUrl)
+                        store.getAssetUrl(
+                          artists.find((a) => a.id === currentArtistId)
+                            ?.coverUrl,
+                        )
                       "
                       class="w-5 h-5 rounded-full object-cover border border-white/10"
                     />
                     <span class="text-xs font-bold text-white truncate">
-                      {{ artists.find((a) => a.id === currentArtistId)?.name || "艺人歌单" }}
+                      {{
+                        artists.find((a) => a.id === currentArtistId)?.name ||
+                        "艺人歌单"
+                      }}
                     </span>
                   </div>
                   <button
@@ -2104,14 +2353,21 @@ watch(syncPlayerState, (enabled) => {
                   </button>
                   <div class="flex items-center gap-2 overflow-hidden flex-1">
                     <img
-                      v-if="albums.find((a) => a.id === currentAlbumId)?.coverUrl"
+                      v-if="
+                        albums.find((a) => a.id === currentAlbumId)?.coverUrl
+                      "
                       :src="
-                        store.getAssetUrl(albums.find((a) => a.id === currentAlbumId)?.coverUrl)
+                        store.getAssetUrl(
+                          albums.find((a) => a.id === currentAlbumId)?.coverUrl,
+                        )
                       "
                       class="w-5 h-5 rounded object-cover border border-white/10"
                     />
                     <span class="text-xs font-bold text-white truncate">
-                      {{ albums.find((a) => a.id === currentAlbumId)?.title || "专辑歌单" }}
+                      {{
+                        albums.find((a) => a.id === currentAlbumId)?.title ||
+                        "专辑歌单"
+                      }}
                     </span>
                   </div>
                   <button
@@ -2131,7 +2387,9 @@ watch(syncPlayerState, (enabled) => {
                 >
                   <div class="text-xs text-white/40 w-4 text-center">
                     <span
-                      v-if="currentTrack?.id === track.id && playerState.isPlaying"
+                      v-if="
+                        currentTrack?.id === track.id && playerState.isPlaying
+                      "
                       class="animate-pulse text-blue-400"
                     >
                       <svg
@@ -2150,11 +2408,15 @@ watch(syncPlayerState, (enabled) => {
                   <div class="flex-1 min-w-0">
                     <div
                       class="text-xs font-medium text-white/90 truncate"
-                      :class="{ 'text-blue-400': currentTrack?.id === track.id }"
+                      :class="{
+                        'text-blue-400': currentTrack?.id === track.id,
+                      }"
                     >
                       {{ track.title }}
                     </div>
-                    <div class="text-[10px] text-white/50 truncate">{{ track.artist }}</div>
+                    <div class="text-[10px] text-white/50 truncate">
+                      {{ track.artist }}
+                    </div>
                   </div>
                   <div
                     class="text-[10px] text-white/40 opacity-0 group-hover/item:opacity-100 transition-opacity"
@@ -2168,18 +2430,27 @@ watch(syncPlayerState, (enabled) => {
         </div>
 
         <!-- Right Column: Lyrics -->
-        <div class="w-[61.8%] flex flex-col bg-black/10 h-full relative" @wheel.stop>
+        <div
+          class="w-[61.8%] flex flex-col bg-black/10 h-full relative"
+          @wheel.stop
+        >
           <!-- Visual Mode Switcher -->
           <div
             class="absolute top-4 right-4 z-30 transition-opacity duration-300"
-            :class="[showVisualModeMenu ? 'opacity-100' : 'opacity-0 group-hover:opacity-100']"
+            :class="[
+              showVisualModeMenu
+                ? 'opacity-100'
+                : 'opacity-0 group-hover:opacity-100',
+            ]"
           >
             <button
               @click="showVisualModeMenu = !showVisualModeMenu"
               class="w-8 h-8 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white/70 hover:text-white hover:bg-black/60 transition-all border border-white/10"
               title="切换播放效果"
             >
-              {{ visualModeOptions.find((o) => o.id === visualMode)?.icon || "🎨" }}
+              {{
+                visualModeOptions.find((o) => o.id === visualMode)?.icon || "🎨"
+              }}
             </button>
 
             <!-- Dropdown Menu -->
@@ -2193,7 +2464,9 @@ watch(syncPlayerState, (enabled) => {
                 @click="toggleVisualMode(opt.id as VisualMode)"
                 class="w-full px-4 py-2.5 text-left text-xs flex items-center gap-3 transition-colors hover:bg-white/10"
                 :class="
-                  visualMode === opt.id ? 'text-blue-400 font-bold bg-white/5' : 'text-white/70'
+                  visualMode === opt.id
+                    ? 'text-blue-400 font-bold bg-white/5'
+                    : 'text-white/70'
                 "
               >
                 <span class="text-sm">{{ opt.icon }}</span>
@@ -2224,7 +2497,8 @@ watch(syncPlayerState, (enabled) => {
                 ]"
                 :ref="
                   (el) => {
-                    if (index === activeLyricIndex) activeLyricEl = el as HTMLElement;
+                    if (index === activeLyricIndex)
+                      activeLyricEl = el as HTMLElement;
                   }
                 "
               >
@@ -2269,7 +2543,9 @@ watch(syncPlayerState, (enabled) => {
                   class="flex flex-col items-center gap-2"
                 >
                   <!-- Current Lyric -->
-                  <div class="text-sm font-bold text-white text-center drop-shadow-md">
+                  <div
+                    class="text-sm font-bold text-white text-center drop-shadow-md"
+                  >
                     {{ parsedLyrics[activeLyricIndex]?.text }}
                   </div>
                   <!-- Next Lyric Preview -->
@@ -2281,7 +2557,9 @@ watch(syncPlayerState, (enabled) => {
                   </div>
                 </div>
                 <div v-else class="flex flex-col items-center gap-1">
-                  <span class="text-xs font-medium text-white/60">频谱分析</span>
+                  <span class="text-xs font-medium text-white/60"
+                    >频谱分析</span
+                  >
                   <span class="text-[10px] opacity-50">Spectrum Analyzer</span>
                 </div>
               </div>
@@ -2305,13 +2583,17 @@ watch(syncPlayerState, (enabled) => {
               ></div>
               <div class="z-10 text-3xl animate-bounce">✨</div>
             </div>
-            <div class="flex flex-col items-center gap-2 mt-8 w-full max-w-[80%]">
+            <div
+              class="flex flex-col items-center gap-2 mt-8 w-full max-w-[80%]"
+            >
               <div
                 v-if="parsedLyrics.length > 0 && activeLyricIndex >= 0"
                 class="flex flex-col items-center gap-2"
               >
                 <!-- Current Lyric -->
-                <div class="text-sm font-bold text-white text-center drop-shadow-md">
+                <div
+                  class="text-sm font-bold text-white text-center drop-shadow-md"
+                >
                   {{ parsedLyrics[activeLyricIndex]?.text }}
                 </div>
                 <!-- Next Lyric Preview -->
@@ -2324,7 +2606,9 @@ watch(syncPlayerState, (enabled) => {
               </div>
               <div v-else class="flex flex-col items-center gap-1">
                 <span class="text-xs font-medium text-white/60">抽象动画</span>
-                <span class="text-[10px] opacity-50">Abstract Visualizations</span>
+                <span class="text-[10px] opacity-50"
+                  >Abstract Visualizations</span
+                >
               </div>
             </div>
           </div>
@@ -2338,7 +2622,9 @@ watch(syncPlayerState, (enabled) => {
               <!-- Vinyl Record -->
               <div
                 class="w-56 h-56 rounded-full bg-[#111] border-[6px] border-[#222] shadow-[0_0_50px_rgba(0,0,0,0.8)] flex items-center justify-center relative overflow-hidden"
-                :class="{ 'animate-[spin_10s_linear_infinite]': playerState.isPlaying }"
+                :class="{
+                  'animate-[spin_10s_linear_infinite]': playerState.isPlaying,
+                }"
               >
                 <!-- Grooves -->
                 <div
@@ -2370,17 +2656,23 @@ watch(syncPlayerState, (enabled) => {
                   </div>
                 </div>
                 <!-- Hole -->
-                <div class="absolute w-2 h-2 bg-black rounded-full z-20 shadow-inner"></div>
+                <div
+                  class="absolute w-2 h-2 bg-black rounded-full z-20 shadow-inner"
+                ></div>
               </div>
 
               <!-- Tonearm (Needle) -->
               <div
                 class="absolute -top-6 -right-4 w-32 h-32 pointer-events-none transition-transform duration-700 ease-in-out origin-[85%_15%]"
                 :style="{
-                  transform: playerState.isPlaying ? 'rotate(0deg)' : 'rotate(-25deg)',
+                  transform: playerState.isPlaying
+                    ? 'rotate(0deg)'
+                    : 'rotate(-25deg)',
                 }"
               >
-                <div class="absolute top-[15%] right-[15%] w-4 h-4 bg-zinc-600 rounded-full"></div>
+                <div
+                  class="absolute top-[15%] right-[15%] w-4 h-4 bg-zinc-600 rounded-full"
+                ></div>
                 <div
                   class="absolute top-[18%] right-[17%] w-1.5 h-24 bg-gradient-to-b from-zinc-500 to-zinc-700 rounded-full origin-top rotate-[25deg]"
                 ></div>
@@ -2389,13 +2681,17 @@ watch(syncPlayerState, (enabled) => {
                 ></div>
               </div>
             </div>
-            <div class="flex flex-col items-center gap-2 mt-12 w-full max-w-[80%]">
+            <div
+              class="flex flex-col items-center gap-2 mt-12 w-full max-w-[80%]"
+            >
               <div
                 v-if="parsedLyrics.length > 0 && activeLyricIndex >= 0"
                 class="flex flex-col items-center gap-2"
               >
                 <!-- Current Lyric -->
-                <div class="text-sm font-bold text-white text-center drop-shadow-md">
+                <div
+                  class="text-sm font-bold text-white text-center drop-shadow-md"
+                >
                   {{ parsedLyrics[activeLyricIndex]?.text }}
                 </div>
                 <!-- Next Lyric Preview -->
@@ -2407,14 +2703,20 @@ watch(syncPlayerState, (enabled) => {
                 </div>
               </div>
               <div v-else class="flex flex-col items-center gap-1">
-                <span class="text-xs font-medium text-white/60">封面与黑胶</span>
-                <span class="text-[10px] opacity-50">Cover Art &amp; Vinyl</span>
+                <span class="text-xs font-medium text-white/60"
+                  >封面与黑胶</span
+                >
+                <span class="text-[10px] opacity-50"
+                  >Cover Art &amp; Vinyl</span
+                >
               </div>
             </div>
           </div>
 
           <!-- Controls moved here to center in lyrics area -->
-          <div class="absolute left-1/2 -translate-x-1/2 bottom-3 z-20 max-w-[calc(100vw-2rem)]">
+          <div
+            class="absolute left-1/2 -translate-x-1/2 bottom-3 z-20 max-w-[calc(100vw-2rem)]"
+          >
             <div
               class="bg-black/40 backdrop-blur-md rounded-xl px-4 py-2 shadow-lg flex items-center gap-6 w-fit min-w-[280px] max-w-[calc(100vw-2rem)] transition-all opacity-0 group-hover:opacity-100 duration-300"
             >
@@ -2439,7 +2741,9 @@ watch(syncPlayerState, (enabled) => {
                 </button>
               </div>
 
-              <div class="flex items-center gap-2 shrink-0 border-l border-white/10 pl-6">
+              <div
+                class="flex items-center gap-2 shrink-0 border-l border-white/10 pl-6"
+              >
                 <span class="text-xs text-white/70">
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -2519,11 +2823,23 @@ watch(syncPlayerState, (enabled) => {
   /* 优化三边渐变融合，减少遮挡面积，确保封面能显示全 */
   mask-image:
     linear-gradient(to right, black 85%, transparent 100%),
-    linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
+    linear-gradient(
+      to bottom,
+      transparent 0%,
+      black 10%,
+      black 90%,
+      transparent 100%
+    );
   mask-composite: intersect;
   -webkit-mask-image:
     linear-gradient(to right, black 85%, transparent 100%),
-    linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
+    linear-gradient(
+      to bottom,
+      transparent 0%,
+      black 10%,
+      black 90%,
+      transparent 100%
+    );
   -webkit-mask-composite: source-in;
 }
 

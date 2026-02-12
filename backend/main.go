@@ -92,6 +92,7 @@ func main() {
 	handlers.BindRssHandlers(server) // Added RSS handlers
 	handlers.BindMemoHandlers(server)
 	handlers.BindTodoHandlers(server)
+	handlers.BindNetworkHandlers(server)
 	go server.Serve()
 	defer server.Close()
 

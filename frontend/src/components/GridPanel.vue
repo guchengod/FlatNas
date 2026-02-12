@@ -1480,7 +1480,7 @@ const fetchContainerStatuses = async () => {
     try {
       const headers = store.getHeaders();
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
 
       const res = await fetch("/api/docker/containers", { headers, signal: controller.signal });
       clearTimeout(timeoutId);

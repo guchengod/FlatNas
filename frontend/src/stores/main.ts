@@ -34,10 +34,23 @@ export const useMainStore = defineStore("main", () => {
   let socketListenersBound = false;
   let isInitializing = false;
   let isFirstConnect = true;
+  const NETWORK_HEARTBEAT_INTERVAL = 5000;
+  const NETWORK_HEARTBEAT_TIMEOUT = 10000;
+  const NETWORK_POLL_INTERVAL = 30000;
+  const NETWORK_IDLE_BROADCAST_INTERVAL = 30000;
+  const networkSyncMode = ref<"broadcast" | "poll">("broadcast");
+  let networkHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let networkHeartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
+  let networkPollTimer: ReturnType<typeof setInterval> | null = null;
+  let networkBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastNetworkHeartbeatAt = 0;
+  let pendingNetworkMode: string | null = null;
+  let isApplyingNetworkMode = false;
 
   socket.on("connect", async () => {
     console.log("Socket connected:", socket.id);
     isConnected.value = true;
+    startNetworkHeartbeat();
 
     // Skip the mode check on first connection (initial load)
     // The init() function will handle the initial state and config fetching
@@ -61,6 +74,7 @@ export const useMainStore = defineStore("main", () => {
   socket.on("disconnect", () => {
     console.log("Socket disconnected");
     isConnected.value = false;
+    stopNetworkHeartbeat();
   });
 
   socket.on("connect_error", (err: unknown) => {
@@ -147,8 +161,110 @@ export const useMainStore = defineStore("main", () => {
     return headers;
   };
 
+  const isValidNetworkMode = (mode: string) =>
+    mode === "auto" || mode === "lan" || mode === "wan" || mode === "latency";
+
+  const emitNetworkHeartbeat = () => {
+    const t = token.value || localStorage.getItem("flat-nas-token");
+    if (!t) return;
+    socket.emit("network:heartbeat", { token: t });
+  };
+
+  const emitNetworkMode = (mode: string) => {
+    if (!isLogged.value) return;
+    const t = token.value || localStorage.getItem("flat-nas-token");
+    if (!t || !isValidNetworkMode(mode)) return;
+    socket.emit("network:mode", { token: t, mode });
+  };
+
+  const scheduleNetworkModeBroadcast = (mode: string) => {
+    if (!isValidNetworkMode(mode)) return;
+    pendingNetworkMode = mode;
+    if (networkSyncMode.value === "broadcast") {
+      if (networkBroadcastTimer) {
+        clearTimeout(networkBroadcastTimer);
+        networkBroadcastTimer = null;
+      }
+      emitNetworkMode(mode);
+      return;
+    }
+    if (networkBroadcastTimer) return;
+    networkBroadcastTimer = setTimeout(() => {
+      networkBroadcastTimer = null;
+      const nextMode = pendingNetworkMode;
+      pendingNetworkMode = null;
+      if (nextMode) emitNetworkMode(nextMode);
+    }, NETWORK_IDLE_BROADCAST_INTERVAL);
+  };
+
+  const applyRemoteNetworkMode = (mode: string) => {
+    if (!isValidNetworkMode(mode)) return;
+    if (appConfig.value.forceNetworkMode === mode) return;
+    isApplyingNetworkMode = true;
+    appConfig.value.forceNetworkMode = mode;
+    Promise.resolve().then(() => {
+      isApplyingNetworkMode = false;
+    });
+  };
+
+  const pollNetworkMode = async () => {
+    try {
+      const headers: Record<string, string> = {};
+      const t = token.value || localStorage.getItem("flat-nas-token");
+      if (t) headers["Authorization"] = `Bearer ${t}`;
+      const res = await fetch(`/api/data`, { headers });
+      if (!res.ok) return;
+      const data = await res.json();
+      const mode = data?.appConfig?.forceNetworkMode;
+      if (typeof mode === "string") {
+        applyRemoteNetworkMode(mode);
+      }
+    } catch (e) {
+      console.error("Network mode poll failed", e);
+    }
+  };
+
+  const updateNetworkSyncMode = (active: boolean) => {
+    const nextMode = active ? "broadcast" : "poll";
+    if (nextMode === networkSyncMode.value) return;
+    networkSyncMode.value = nextMode;
+    if (nextMode === "broadcast") {
+      if (networkPollTimer) {
+        clearInterval(networkPollTimer);
+        networkPollTimer = null;
+      }
+      return;
+    }
+    if (!networkPollTimer) {
+      networkPollTimer = setInterval(pollNetworkMode, NETWORK_POLL_INTERVAL);
+    }
+    pollNetworkMode();
+  };
+
+  const startNetworkHeartbeat = () => {
+    if (networkHeartbeatTimer) clearInterval(networkHeartbeatTimer);
+    if (networkHeartbeatCheckTimer) clearInterval(networkHeartbeatCheckTimer);
+    emitNetworkHeartbeat();
+    networkHeartbeatTimer = setInterval(emitNetworkHeartbeat, NETWORK_HEARTBEAT_INTERVAL);
+    networkHeartbeatCheckTimer = setInterval(() => {
+      const active =
+        lastNetworkHeartbeatAt > 0 &&
+        Date.now() - lastNetworkHeartbeatAt <= NETWORK_HEARTBEAT_TIMEOUT;
+      updateNetworkSyncMode(active);
+    }, 1000);
+  };
+
+  const stopNetworkHeartbeat = () => {
+    if (networkHeartbeatTimer) clearInterval(networkHeartbeatTimer);
+    if (networkHeartbeatCheckTimer) clearInterval(networkHeartbeatCheckTimer);
+    networkHeartbeatTimer = null;
+    networkHeartbeatCheckTimer = null;
+    lastNetworkHeartbeatAt = 0;
+    updateNetworkSyncMode(false);
+  };
+
   // Version Check
-  const currentVersion = "1.1.1dev6";
+  const currentVersion = "1.1.1";
   const latestVersion = ref("");
   const dockerUpdateAvailable = ref(false);
   const updateCheckLastAt = useStorage<number>("flat-nas-update-check-last-at", 0);
@@ -294,6 +410,7 @@ export const useMainStore = defineStore("main", () => {
     customJsList: [],
     customJsDisclaimerAgreed: false,
     mouseHoverEffect: "scale",
+    forceNetworkMode: "auto",
     latencyThresholdMs: 200,
   });
 
@@ -712,6 +829,21 @@ export const useMainStore = defineStore("main", () => {
             await fetchAndProcessData();
           }
         });
+        socket.on("network:heartbeat", () => {
+          lastNetworkHeartbeatAt = Date.now();
+          updateNetworkSyncMode(true);
+        });
+        socket.on("network:mode", ({ mode, username: updatedUser }: { mode: string; username: string }) => {
+          if (!mode) return;
+          if (
+            updatedUser &&
+            updatedUser !== username.value &&
+            !(username.value === "admin" && updatedUser === "admin")
+          ) {
+            return;
+          }
+          applyRemoteNetworkMode(mode);
+        });
         socketListenersBound = true;
       }
       if (token.value) {
@@ -1003,6 +1135,7 @@ export const useMainStore = defineStore("main", () => {
     isLogged.value = false;
     localStorage.removeItem("flat-nas-token");
     localStorage.removeItem("flat-nas-username");
+    stopNetworkHeartbeat();
 
     // Reload to show default/public view
     await init();
@@ -1062,9 +1195,18 @@ export const useMainStore = defineStore("main", () => {
   );
 
   watch(
+    () => appConfig.value.forceNetworkMode,
+    (mode, prev) => {
+      if (!mode || mode === prev) return;
+      if (isApplyingNetworkMode) return;
+      scheduleNetworkModeBroadcast(mode);
+    },
+  );
+
+  watch(
     appConfig,
     () => {
-      if (!isInitializing) {
+      if (!isInitializing && !isApplyingNetworkMode) {
         saveData();
       }
     },

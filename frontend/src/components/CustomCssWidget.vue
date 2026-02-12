@@ -9,6 +9,7 @@ const props = defineProps<{
 
 const store = useMainStore();
 const isEditing = ref(false);
+const canEdit = computed(() => store.isLogged);
 
 // Default data if empty
 const titleContent = ref(props.widget.data?.title || "自定义组件");
@@ -48,6 +49,7 @@ const applyStyles = () => {
 };
 
 const save = () => {
+  if (!canEdit.value) return;
   const widget = store.widgets.find((w) => w.id === props.widget.id);
   if (widget) {
     widget.data = {
@@ -74,11 +76,13 @@ const copyPrompt = () => {
 };
 
 const toggleEdit = () => {
+  if (!canEdit.value) return;
   isEditing.value = !isEditing.value;
 };
 
 // File Upload Handling
 const handleFileUpload = (event: Event) => {
+  if (!canEdit.value) return;
   const file = (event.target as HTMLInputElement).files?.[0];
   if (!file) return;
 
@@ -112,6 +116,14 @@ watch([htmlContent, cssContent], () => {
   // Optional: Live preview if we want, but might be heavy.
   // applyStyles();
 });
+
+watch(
+  () => store.isLogged,
+  (val) => {
+    if (!val) isEditing.value = false;
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -128,6 +140,7 @@ watch([htmlContent, cssContent], () => {
 
     <!-- Edit Overlay Button -->
     <button
+      v-if="canEdit"
       @click="toggleEdit"
       class="absolute top-2 right-2 z-50 p-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity text-gray-600"
       title="编辑组件"
@@ -150,7 +163,7 @@ watch([htmlContent, cssContent], () => {
 
     <!-- Edit Mode -->
     <div
-      v-if="isEditing"
+      v-if="isEditing && canEdit"
       class="absolute inset-0 z-40 bg-white flex flex-col p-4 gap-2 overflow-auto"
     >
       <div class="flex items-center justify-between mb-2">

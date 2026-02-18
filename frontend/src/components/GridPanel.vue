@@ -52,6 +52,29 @@ useWallpaperRotation();
 const { deviceKey, isMobile } = useDevice(toRef(store.appConfig, "deviceMode"));
 const { width, height } = useWindowSize();
 const isHeaderRowLayout = computed(() => width.value >= 1280);
+const gridWidgetTypes = new Set([
+  "clock",
+  "weather",
+  "calendar",
+  "memo",
+  "todo",
+  "music",
+  "calculator",
+  "ip",
+  "div-card",
+  "countdown",
+  "countup",
+  "iframe",
+  "bookmarks",
+  "hot",
+  "clockweather",
+  "amap-weather",
+  "rss",
+  "docker",
+  "system-status",
+  "custom-css",
+  "file-transfer",
+]);
 
 const currentHour = ref(new Date().getHours());
 let daylightTimer: ReturnType<typeof setInterval> | null = null;
@@ -595,11 +618,12 @@ const checkVisible = (obj?: WidgetConfig | NavItem) => {
   if (store.isLogged) return true;
   return !!obj.isPublic;
 };
+const isGridWidget = (widget: WidgetConfig) => gridWidgetTypes.has(widget.type);
 const isTabletPortrait = computed(() => deviceKey.value === "tablet" && height.value > width.value);
 const desktopWidgetAreaCols = computed(() => {
   const raw = store.appConfig.widgetAreaCols ?? store.appConfig.widgetAreaSize;
-  const n = typeof raw === "number" && Number.isFinite(raw) ? Math.trunc(raw) : 4;
-  const clamped = Math.min(16, Math.max(1, n));
+  const n = typeof raw === "number" && Number.isFinite(raw) ? raw : 4;
+  const clamped = Math.min(16, Math.max(0.5, n));
   if (store.isExpandedMode) return Math.min(16, Math.max(8, clamped));
   return clamped;
 });
@@ -629,15 +653,47 @@ const widgetColNum = computed(() => {
 const rowHeight = computed(() =>
   deviceKey.value === "mobile" ? 120 : deviceKey.value === "tablet" ? 130 : 140,
 );
+const gridScale = 2;
+const gridMargin = computed<[number, number]>(() => (isMobile.value ? [12, 12] : [24, 24]));
+const scaledRowHeight = computed(() =>
+  Math.max(1, (rowHeight.value - gridMargin.value[1]) / gridScale),
+);
+const scaleGridValue = (value: number) => Math.round(value * gridScale);
+const unscaleGridValue = (value: number) => Math.round(value) / gridScale;
+const scaledLayoutData = computed<GridLayoutItem[]>({
+  get: () =>
+    layoutData.value.map((item) => ({
+      ...item,
+      x: scaleGridValue(item.x),
+      y: scaleGridValue(item.y),
+      w: scaleGridValue(item.w),
+      h: scaleGridValue(item.h),
+    })),
+  set: (next) => {
+    const current = new Map(layoutData.value.map((item) => [item.i, item]));
+    layoutData.value = next.map((item) => {
+      const base = current.get(item.i);
+      const x = unscaleGridValue(item.x);
+      const y = unscaleGridValue(item.y);
+      const w = unscaleGridValue(item.w);
+      const h = unscaleGridValue(item.h);
+      if (base) {
+        return { ...base, x, y, w, h, colSpan: w, rowSpan: h };
+      }
+      return { ...item, x, y, w, h };
+    });
+  },
+});
 
 const compactVertical = (layout: GridLayoutItem[]) => {
+  const step = 1 / gridScale;
   const collides = (a: GridLayoutItem, b: GridLayoutItem) =>
     a.i !== b.i && a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 
   const canPlace = (item: GridLayoutItem, placed: GridLayoutItem[]) =>
     !placed.some((p) => collides(item, p));
 
-  const sorted = [...layout].sort((a, b) => a.y - b.y || a.x - b.x);
+  const sorted = [...layout].sort((a, b) => (a.y || 0) - (b.y || 0) || (a.x || 0) - (b.x || 0));
   const placed: GridLayoutItem[] = [];
   const compacted: GridLayoutItem[] = [];
 
@@ -647,7 +703,8 @@ const compactVertical = (layout: GridLayoutItem[]) => {
 
     // 1. Try to move UP to fill gaps (vertical compaction)
     let found = false;
-    for (let y = 0; y < originalY; y++) {
+    // 使用 step 步进检查，确保能填充 0.5 高度的空隙
+    for (let y = 0; y < originalY; y += step) {
       const candidate = { ...next, y };
       if (canPlace(candidate, placed)) {
         next = candidate;
@@ -665,7 +722,7 @@ const compactVertical = (layout: GridLayoutItem[]) => {
           next = candidate;
           break;
         }
-        y++;
+        y += step;
         if (y > 10000) break; // Safety break
       }
     }
@@ -691,11 +748,7 @@ watch(
       .filter(
         (w) =>
           checkVisible(w) &&
-          w.type !== "player" &&
-          w.type !== "search" &&
-          w.type !== "quote" &&
-          w.type !== "sidebar" &&
-          w.type !== "status-monitor" &&
+          isGridWidget(w) &&
           !(deviceKey.value === "mobile" && w.hideOnMobile),
       )
       .sort((a, b) => {
@@ -953,9 +1006,10 @@ const onWidgetHandleClick = (widget: WidgetConfig) => {
 const handleSizeSelect = (widget: GridLayoutItem, size: { colSpan: number; rowSpan: number }) => {
   const maxCols = deviceKey.value === "mobile" ? 2 : Math.min(4, widgetColNum.value);
   const maxRows = 4;
-  const min = 1;
-  const nextW = Math.min(Math.max(size.colSpan, min), maxCols);
-  const nextH = Math.min(Math.max(size.rowSpan, min), maxRows);
+  const min = 0.5;
+  const normalize = (value: number) => Math.round(value * 2) / 2;
+  const nextW = Math.min(Math.max(normalize(size.colSpan), min), maxCols);
+  const nextH = Math.min(Math.max(normalize(size.rowSpan), min), maxRows);
 
   widget.w = nextW;
   widget.h = nextH;
@@ -970,6 +1024,41 @@ const handleSizeSelect = (widget: GridLayoutItem, size: { colSpan: number; rowSp
   handleLayoutUpdated(newLayout);
 
   activeResizeWidgetId.value = null;
+};
+
+const handleScaledLayoutUpdated = (newLayout: GridLayoutItem[]) => {
+  const unscaled = newLayout.map((item) => ({
+    ...item,
+    x: unscaleGridValue(item.x),
+    y: unscaleGridValue(item.y),
+    w: unscaleGridValue(item.w),
+    h: unscaleGridValue(item.h),
+  }));
+
+  // Enforce custom compaction logic (0.5 unit support)
+  // This ensures the layout is consistent with what will be loaded after refresh
+  const compacted = compactVertical(unscaled);
+
+  // Check if layout actually changed to avoid recursive updates
+  const isChanged =
+    layoutData.value.length !== compacted.length ||
+    layoutData.value.some((item) => {
+      const match = compacted.find((c) => c.i === item.i);
+      if (!match) return true;
+      return (
+        match.x !== item.x ||
+        match.y !== item.y ||
+        match.w !== item.w ||
+        match.h !== item.h
+      );
+    });
+
+  if (!isChanged) return;
+  
+  // Update local layout data to reflect compaction
+  layoutData.value = compacted;
+
+  handleLayoutUpdated(compacted);
 };
 
 const isEmpireCloudWidget = (type: string) => {
@@ -1094,6 +1183,7 @@ onMounted(() => {
 
   store.init().then(() => {
     store.cleanInvalidGroups();
+    normalizeDivCardWidgets();
   });
   nextTick(() => {
     searchInputRef.value?.focus();
@@ -1122,9 +1212,131 @@ const openEditModal = (item: NavItem, groupId?: string) => {
   showEditModal.value = true;
 };
 const handleSave = (payload: { item: NavItem; groupId?: string }) => {
+  // Check if it's a div-card widget update
+  const widget = store.widgets.find((w) => w.id === payload.item.id && w.type === "div-card");
+  if (widget) {
+    // Merge all properties from the edited item back into widget.data
+    // This ensures icon, url, background, etc. are saved
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { id: _id, ...dataProps } = payload.item;
+    widget.data = {
+      ...widget.data,
+      ...dataProps,
+    };
+    store.saveData();
+    return;
+  }
+
   if (payload.item.id) store.updateItem(payload.item);
   else if (payload.groupId)
     store.addItem({ ...payload.item, id: Date.now().toString() }, payload.groupId);
+};
+const normalizeGridSpan = (value: number) => Math.round(value * 2) / 2;
+const getDivCardDefaultSize = () => {
+  const maxCols = widgetColNum.value;
+  const w = Math.max(0.5, Math.min(maxCols, normalizeGridSpan(0.5)));
+  return { w, h: 1 };
+};
+const normalizeDivCardWidgets = () => {
+  let changed = false;
+  const { w: defaultW, h: defaultH } = getDivCardDefaultSize();
+  store.widgets.forEach((widget) => {
+    if (widget.type !== "div-card") return;
+    const nextW = widget.w ?? widget.colSpan ?? defaultW;
+    const nextH = widget.h ?? widget.rowSpan ?? defaultH;
+    const finalW = nextW > 0 ? nextW : defaultW;
+    const finalH = nextH > 0 ? nextH : defaultH;
+    if (
+      widget.w !== finalW ||
+      widget.h !== finalH ||
+      widget.colSpan !== finalW ||
+      widget.rowSpan !== finalH
+    ) {
+      widget.w = finalW;
+      widget.h = finalH;
+      widget.colSpan = finalW;
+      widget.rowSpan = finalH;
+      changed = true;
+    }
+  });
+  if (changed) store.saveData();
+};
+const addDivCardWidget = () => {
+  const newId = `div-card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const { w, h } = getDivCardDefaultSize();
+  const newWidget: WidgetConfig = {
+    id: newId,
+    type: "div-card",
+    enable: true,
+    isPublic: true,
+    w,
+    h,
+    colSpan: w,
+    rowSpan: h,
+    data: {
+      title: "div 卡片",
+      iconSize: 180,
+    },
+  };
+  
+  store.widgets.push(newWidget);
+
+  // Manually update layoutData because the watcher is disabled in edit mode
+  const currentLayout = [...layoutData.value];
+  const newLayoutItem = { 
+    ...newWidget, 
+    i: newWidget.id, 
+    x: 0, // Initial X (will be fixed by layout logic)
+    y: Infinity, // Put at bottom initially
+    w, 
+    h 
+  };
+  
+  // Use generateLayout + compactVertical to find the correct position
+  const updatedLayout = compactVertical(generateLayout([...currentLayout, newLayoutItem], widgetColNum.value));
+  
+  layoutData.value = updatedLayout;
+  
+  // Sync the calculated position back to the widget in store
+  handleLayoutUpdated(updatedLayout);
+  
+  store.saveData();
+};
+const getDivCardTargetGroupId = () => {
+  const groups = displayGroups.value;
+  if (groups.length === 0) return "";
+  if (isWebPaginationMode.value) {
+    const active = groups.find((g) => g.id === activePaginationGroupId.value);
+    return active?.id ?? groups[0]?.id ?? "";
+  }
+  return groups[0]?.id ?? "";
+};
+const handleDivCardClick = (widget: WidgetConfig) => {
+  if (isEditMode.value) {
+    // Edit mode: Disable click to avoid conflict with drag
+    // User can use right-click context menu to edit/add
+    return;
+  }
+
+  // View mode: Open URL if available
+  if (widget.data) {
+    const item: NavItem = {
+      id: widget.id,
+      title: widget.data.title || "div 卡片",
+      url: widget.data.url || "",
+      ...widget.data,
+    };
+    handleCardClick(item);
+  }
+};
+const deleteDivCardWidget = (id: string) => {
+  store.widgets = store.widgets.filter((w) => w.id !== id);
+  layoutData.value = layoutData.value.filter((w) => w.i !== id && w.id !== id);
+  if (activeResizeWidgetId.value === id) activeResizeWidgetId.value = null;
+  const newLayout = compactVertical(layoutData.value);
+  layoutData.value = newLayout;
+  handleLayoutUpdated(newLayout);
+  store.saveData();
 };
 
 // --- Heartbeat / Polling Mechanism for Layout ---
@@ -1834,6 +2046,22 @@ const onCardPointerUp = () => {
   clearCardLongPress();
 };
 
+const handleDivCardContextMenu = (e: MouseEvent, widget: WidgetConfig) => {
+  if (!store.isLogged) return;
+  e.preventDefault();
+
+  const proxyItem: NavItem = {
+    id: widget.id,
+    title: widget.data?.title || "div 卡片",
+    url: widget.data?.url || "", // Ensure it has a URL field so it's treated as a link item
+    ...widget.data,
+  };
+
+  contextMenuItem.value = proxyItem;
+  contextMenuGroupId.value = undefined;
+  openContextMenu(e, proxyItem, undefined);
+};
+
 const handleContextMenu = (e: MouseEvent, item: NavItem, groupId?: string) => {
   if (!store.isLogged) return;
   if (ignoreNextNativeContextMenu && e.type === "contextmenu") {
@@ -1926,7 +2154,12 @@ const openGroupDeleteConfirm = (id: string) => {
 
 const confirmDelete = () => {
   if (deleteType.value === "item" && itemToDelete.value) {
-    store.deleteItem(itemToDelete.value);
+    const isDivCard = store.widgets.some((w) => w.id === itemToDelete.value && w.type === "div-card");
+    if (isDivCard) {
+      deleteDivCardWidget(itemToDelete.value);
+    } else {
+      store.deleteItem(itemToDelete.value);
+    }
   } else if (deleteType.value === "group" && groupToDelete.value) {
     store.deleteGroup(groupToDelete.value, true);
   }
@@ -2461,7 +2694,7 @@ onUnmounted(() => {
       <div class="mx-auto transition-all duration-300" :style="{ maxWidth: mainContentMaxWidth }">
         <div
           class="flex flex-col xl:flex-row xl:justify-between items-center gap-6 relative flatnas-header-container"
-          :class="isWebPaginationMode ? 'mb-4' : 'mb-10'"
+          :class="isWebPaginationMode ? 'mb-4' : 'mb-4'"
         >
           <div
             class="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 flex-shrink-0 z-30 transition-all duration-500"
@@ -2651,6 +2884,13 @@ onUnmounted(() => {
             >
               {{ isEditMode ? "完成" : "编辑" }}
             </button>
+            <button
+              v-if="store.isLogged && isEditMode"
+              @click="addDivCardWidget"
+              class="hidden xl:flex pointer-events-auto rounded-lg text-sm font-medium transition-all bg-blue-500 text-white px-4 py-2 shadow-sm hover:bg-blue-600"
+            >
+              新建卡片
+            </button>
           </div>
         </div>
 
@@ -2679,32 +2919,42 @@ onUnmounted(() => {
           </button>
         </VueDraggable>
 
-        <GridLayout
+        <div
           v-if="layoutData.length > 0"
-          v-model:layout="layoutData"
-          :col-num="widgetColNum"
-          :row-height="rowHeight"
-          :is-draggable="isEditMode && !activeResizeWidgetId"
-          :is-resizable="false"
-          :vertical-compact="true"
-          :use-css-transforms="true"
-          :margin="isMobile ? [12, 12] : [24, 24]"
-          @layout-updated="handleLayoutUpdated"
-          :class="[
-            'mb-4 text-white select-none transition-all duration-300',
-            activeResizeWidgetId ? 'smooth-size' : '',
-          ]"
+          class="group-container transition-all"
+          :style="{ marginBottom: (store.appConfig.groupGap ?? 30) + 'px' }"
         >
+          <GridLayout
+            v-model:layout="scaledLayoutData"
+            :col-num="widgetColNum * gridScale"
+            :row-height="scaledRowHeight"
+            :is-draggable="isEditMode && !activeResizeWidgetId"
+            :is-resizable="false"
+            :vertical-compact="true"
+            :use-css-transforms="true"
+            :margin="gridMargin"
+            @layout-updated="handleScaledLayoutUpdated"
+            :class="[
+              'text-white select-none transition-all duration-300',
+              activeResizeWidgetId ? 'smooth-size' : '',
+            ]"
+          >
           <GridItem
             v-for="widget in layoutData"
             :key="widget.i"
-            :x="widget.x"
-            :y="widget.y"
-            :w="widget.w"
-            :h="widget.h"
+            :x="scaleGridValue(widget.x)"
+            :y="scaleGridValue(widget.y)"
+            :w="scaleGridValue(widget.w)"
+            :h="scaleGridValue(widget.h)"
             :i="widget.i"
             :drag-allow-from="isHandheld && isEditMode ? '.widget-drag-handle' : undefined"
-            :drag-ignore-from="isHandheld && isEditMode ? 'a' : undefined"
+            :drag-ignore-from="
+              isEditMode
+                ? isHandheld
+                  ? 'a'
+                  : undefined
+                : undefined
+            "
             class="transition-all duration-300 relative"
             :class="[
               isEditMode
@@ -2718,12 +2968,11 @@ onUnmounted(() => {
             ]"
           >
             <button
-              v-if="isEditMode"
-              @click.stop="store.deleteItem(widget.id)"
+              v-if="isEditMode && widget.type === 'div-card'"
+              @click.stop="deleteDivCardWidget(widget.id)"
               class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center shadow-lg z-50 hover:bg-red-600 hover:scale-110 transition-all"
-              style="display: none"
             >
-              <!-- Delete button placeholder -->
+              ✕
             </button>
             <button
               v-if="isEditMode"
@@ -2757,6 +3006,87 @@ onUnmounted(() => {
             <TodoWidget v-else-if="widget.type === 'todo'" :widget="widget" />
             <MusicWidget v-else-if="widget.type === 'music'" :widget="widget" />
             <CalculatorWidget v-else-if="widget.type === 'calculator'" />
+            <div
+              v-else-if="widget.type === 'div-card'"
+              @click.stop="handleDivCardClick(widget)"
+              @contextmenu.prevent.stop="handleDivCardContextMenu($event, widget)"
+              class="div-card-click-target w-full h-full p-3 rounded-2xl border text-white flex flex-col justify-center items-center text-center relative overflow-hidden group transition-all duration-300"
+              :class="[
+                widget.data?.backgroundImage
+                  ? 'border-white/20 bg-white/10 backdrop-blur'
+                  : 'border-transparent bg-transparent',
+                store.appConfig.mouseHoverEffect === 'lift'
+                  ? 'hover:-translate-y-1 hover:shadow-lg'
+                  : store.appConfig.mouseHoverEffect === 'glow'
+                    ? 'hover:shadow-[0_0_15px_rgba(168,85,247,0.5)]'
+                    : ''
+              ]"
+            >
+              <!-- ✨ 背景图层 (高斯模糊 + 遮罩) -->
+              <div
+                v-if="widget.data?.backgroundImage"
+                class="absolute inset-0 z-0 pointer-events-none overflow-hidden rounded-[inherit]"
+              >
+                <div
+                  class="absolute inset-0 bg-cover bg-center transition-all duration-300"
+                  :style="{
+                    backgroundImage: `url('${store.getAssetUrl(widget.data.backgroundImage)}')`,
+                    filter: `blur(${widget.data.backgroundBlur ?? 6}px)`,
+                    transform: 'scale(1.1)',
+                  }"
+                ></div>
+                <div
+                  class="absolute inset-0"
+                  :style="{
+                    backgroundColor: `rgba(0,0,0,${widget.data.backgroundMask ?? 0.3})`,
+                  }"
+                ></div>
+              </div>
+
+              <!-- Icon -->
+              <div
+                v-if="widget.data?.icon"
+                class="relative flex items-center justify-center flex-shrink-0 transition-all duration-300 z-10 mb-2"
+                :style="{
+                  width: ((store.appConfig.iconSize || 48) * ((widget.data.iconSize || 100) / 100)) + 'px',
+                  height: ((store.appConfig.iconSize || 48) * ((widget.data.iconSize || 100) / 100)) + 'px',
+                }"
+              >
+                <IconShape
+                  :shape="store.appConfig.iconShape || 'circle'"
+                  :size="((store.appConfig.iconSize || 48) * ((widget.data.iconSize || 100) / 100))"
+                  :imgScale="100"
+                  :bgClass="
+                    widget.data.color &&
+                    !widget.data.color.includes('sky') &&
+                    widget.data.color !== '#000000' &&
+                    widget.data.color !== 'bg-black'
+                      ? widget.data.color
+                      : 'bg-white'
+                  "
+                  :icon="processIcon(widget.data.icon)"
+                  class="w-full h-full"
+                  :class="widget.data.backgroundImage ? 'drop-shadow-lg' : ''"
+                />
+              </div>
+
+              <div
+                class="text-sm font-semibold tracking-wide relative z-10 truncate w-full px-2"
+                :style="{
+                  color: widget.data?.titleColor || '#ffffff',
+                  textShadow: widget.data?.backgroundImage ? '0 2px 4px rgba(0,0,0,0.8)' : 'none',
+                }"
+              >
+                {{ widget.data?.title || "div 卡片" }}
+              </div>
+
+              <div
+                v-if="!widget.data?.url && !widget.data?.lanUrl && !widget.data?.icon"
+                class="text-[10px] opacity-70 mt-1 relative z-10"
+              >
+                请在编辑模式下右键添加项目
+              </div>
+            </div>
             <div
               v-else-if="widget.type === 'ip'"
               class="w-full h-full p-3 rounded-2xl backdrop-blur border border-white/10 flex flex-col items-center transition-colors text-center text-white"
@@ -2839,6 +3169,7 @@ onUnmounted(() => {
             <FileTransferWidget v-else-if="widget.type === 'file-transfer'" :widget="widget" />
           </GridItem>
         </GridLayout>
+        </div>
 
         <Transition name="fade">
           <div v-if="store.isLogged && isEditMode" class="flex justify-center mb-4 gap-4">
@@ -3510,16 +3841,22 @@ onUnmounted(() => {
       v-show="showContextMenu"
       ref="contextMenuRef"
       data-grid-context-menu
-      class="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[120px] overflow-hidden"
+      class="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[160px] overflow-hidden"
       :style="{ top: contextMenuPosition.y + 'px', left: contextMenuPosition.x + 'px' }"
       @click.stop
+      role="menu"
     >
       <div
         v-if="contextMenuItem?.lanUrl"
         @click="handleMenuLanOpen"
-        class="px-4 py-2 hover:bg-green-50 text-green-700 cursor-pointer flex items-center gap-2 text-sm transition-colors border-b border-gray-100"
+        class="px-4 py-2 hover:bg-green-50 text-green-700 cursor-pointer flex items-center gap-3 text-sm transition-colors border-b border-gray-100 truncate"
+        role="menuitem"
+        :aria-label="'内网访问 ' + (contextMenuItem.title || '')"
       >
-        <span>🌐</span> 内网访问
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+        </svg>
+        <span class="text-[14px] truncate">内网访问</span>
       </div>
       <!-- Backup LAN URLs -->
       <template v-if="contextMenuItem?.backupLanUrls && contextMenuItem.backupLanUrls.length > 0">
@@ -3527,23 +3864,27 @@ onUnmounted(() => {
           v-for="(url, index) in contextMenuItem.backupLanUrls"
           :key="'backup-lan-' + index"
           @click="handleMenuOpen(url)"
-          class="px-4 py-2 hover:bg-green-50 text-green-600 cursor-pointer flex items-center gap-2 text-sm transition-colors border-b border-gray-100"
+          class="px-4 py-2 hover:bg-green-50 text-green-600 cursor-pointer flex items-center gap-3 text-sm transition-colors border-b border-gray-100 truncate"
+          role="menuitem"
         >
-          <span>🌐</span>
-          {{
-            typeof url === "string"
-              ? "备用内网 " + (index + 1)
-              : url.name || "备用内网 " + (index + 1)
-          }}
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+          </svg>
+          <span class="text-[14px] truncate">{{ typeof url === "string" ? "备用内网 " + (index + 1) : url.name || "备用内网 " + (index + 1) }}</span>
         </div>
       </template>
 
       <div
         v-if="contextMenuItem?.url"
         @click="handleMenuWanOpen"
-        class="px-4 py-2 hover:bg-blue-50 text-blue-700 cursor-pointer flex items-center gap-2 text-sm transition-colors border-b border-gray-100"
+        class="px-4 py-2 hover:bg-blue-50 text-blue-700 cursor-pointer flex items-center gap-3 text-sm transition-colors border-b border-gray-100 truncate"
+        role="menuitem"
+        :aria-label="'外网访问 ' + (contextMenuItem.title || '')"
       >
-        <span>🛰️</span> 外网访问
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+        </svg>
+        <span class="text-[14px] truncate">外网访问</span>
       </div>
       <!-- Backup WAN URLs -->
       <template v-if="contextMenuItem?.backupUrls && contextMenuItem.backupUrls.length > 0">
@@ -3551,14 +3892,13 @@ onUnmounted(() => {
           v-for="(url, index) in contextMenuItem.backupUrls"
           :key="'backup-wan-' + index"
           @click="handleMenuOpen(url)"
-          class="px-4 py-2 hover:bg-blue-50 text-blue-600 cursor-pointer flex items-center gap-2 text-sm transition-colors border-b border-gray-100"
+          class="px-4 py-2 hover:bg-blue-50 text-blue-600 cursor-pointer flex items-center gap-3 text-sm transition-colors border-b border-gray-100 truncate"
+          role="menuitem"
         >
-          <span>🛰️</span>
-          {{
-            typeof url === "string"
-              ? "备用外网 " + (index + 1)
-              : url.name || "备用外网 " + (index + 1)
-          }}
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+          </svg>
+          <span class="text-[14px] truncate">{{ typeof url === "string" ? "备用外网 " + (index + 1) : url.name || "备用外网 " + (index + 1) }}</span>
         </div>
       </template>
 
@@ -3570,9 +3910,13 @@ onUnmounted(() => {
             handleDockerAction(contextMenuItem, 'update');
             closeContextMenu();
           "
-          class="px-4 py-2 hover:bg-yellow-50 text-yellow-600 cursor-pointer flex items-center gap-2 text-sm transition-colors border-b border-gray-100"
+          class="px-4 py-2 hover:bg-yellow-50 text-yellow-600 cursor-pointer flex items-center gap-3 text-sm transition-colors border-b border-gray-100 truncate"
+          role="menuitem"
         >
-          <span>⬆️</span> 升级镜像
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          <span class="text-[14px] truncate">升级镜像</span>
         </div>
 
         <div
@@ -3581,9 +3925,14 @@ onUnmounted(() => {
             handleDockerAction(contextMenuItem, 'stop');
             closeContextMenu();
           "
-          class="px-4 py-2 hover:bg-red-50 text-red-600 cursor-pointer flex items-center gap-2 text-sm transition-colors border-b border-gray-100"
+          class="px-4 py-2 hover:bg-red-50 text-red-600 cursor-pointer flex items-center gap-3 text-sm transition-colors border-b border-gray-100 truncate"
+          role="menuitem"
         >
-          <span>⏹️</span> 停止容器
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+          </svg>
+          <span class="text-[14px] truncate">停止容器</span>
         </div>
         <div
           v-else
@@ -3591,9 +3940,14 @@ onUnmounted(() => {
             handleDockerAction(contextMenuItem, 'start');
             closeContextMenu();
           "
-          class="px-4 py-2 hover:bg-green-50 text-green-600 cursor-pointer flex items-center gap-2 text-sm transition-colors border-b border-gray-100"
+          class="px-4 py-2 hover:bg-green-50 text-green-600 cursor-pointer flex items-center gap-3 text-sm transition-colors border-b border-gray-100 truncate"
+          role="menuitem"
         >
-          <span>▶️</span> 启动容器
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span class="text-[14px] truncate">启动容器</span>
         </div>
 
         <div
@@ -3601,23 +3955,37 @@ onUnmounted(() => {
             handleDockerAction(contextMenuItem, 'restart');
             closeContextMenu();
           "
-          class="px-4 py-2 hover:bg-blue-50 text-blue-600 cursor-pointer flex items-center gap-2 text-sm transition-colors border-b border-gray-100"
+          class="px-4 py-2 hover:bg-blue-50 text-blue-600 cursor-pointer flex items-center gap-3 text-sm transition-colors border-b border-gray-100 truncate"
+          role="menuitem"
         >
-          <span>🔄</span> 重启容器
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          <span class="text-[14px] truncate">重启容器</span>
         </div>
       </template>
 
       <div
         @click="handleMenuEdit"
-        class="px-4 py-2 hover:bg-blue-50 text-gray-700 cursor-pointer flex items-center gap-2 text-sm transition-colors"
+        class="px-4 py-2 hover:bg-blue-50 text-gray-700 cursor-pointer flex items-center gap-3 text-sm transition-colors"
+        role="menuitem"
+        aria-label="编辑卡片"
       >
-        <span>✎</span> 编辑卡片
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        </svg>
+        <span class="text-[14px] truncate">编辑卡片</span>
       </div>
       <div
         @click="handleMenuDelete"
-        class="px-4 py-2 hover:bg-red-50 text-red-600 cursor-pointer flex items-center gap-2 text-sm transition-colors border-t border-gray-100"
+        class="px-4 py-2 hover:bg-red-50 text-red-600 cursor-pointer flex items-center gap-3 text-sm transition-colors border-t border-gray-100"
+        role="menuitem"
+        aria-label="删除卡片"
       >
-        <span>✕</span> 删除卡片
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+        <span class="text-[14px] truncate">删除卡片</span>
       </div>
     </div>
 

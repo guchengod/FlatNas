@@ -318,6 +318,7 @@ watch(
 );
 
 onMounted(() => {
+  store.initGlobalDrag();
   const style = document.createElement("style");
   style.id = "devtools-hider";
   style.innerHTML = `
@@ -345,7 +346,7 @@ onMounted(() => {
   <div class="flatnas-handshake-signal" style="display: none !important"></div>
   <GridPanel />
   <div
-    v-if="!store.isServerSnapshotReady"
+    v-if="!store.isClientReady"
     class="fixed inset-0 z-[120] bg-black/30 backdrop-blur-[2px] flex items-center justify-center text-white"
   >
     <div class="flex flex-col items-center gap-3 px-6 py-4 bg-black/60 rounded-2xl border border-white/10">

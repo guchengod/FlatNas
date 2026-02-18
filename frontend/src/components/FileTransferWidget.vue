@@ -34,7 +34,11 @@ const store = useMainStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const socket = ref<any | null>(null);
 const { isMobile } = useDevice(toRef(store.appConfig, "deviceMode"));
-const isSmallLayout = computed(() => props.widget.w === 1 && props.widget.h === 2);
+const isSmallLayout = computed(
+  () =>
+    (props.widget.w ?? props.widget.colSpan ?? 1) <= 1 &&
+    (props.widget.h ?? props.widget.rowSpan ?? 2) <= 2,
+);
 
 const activeTab = useStorage<"chat" | "files" | "photos">(
   `flatnas-transfer-tab-${props.widget.id}`,

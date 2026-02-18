@@ -21,6 +21,7 @@ interface BackupData {
   rssFeeds?: RssFeed[];
   rssCategories?: RssCategory[];
   systemConfig?: Record<string, unknown>;
+  version?: number;
   [key: string]: unknown;
 }
 
@@ -140,6 +141,7 @@ export const useMainStore = defineStore("main", () => {
   const rssFeeds = ref<RssFeed[]>([]);
   const rssCategories = ref<RssCategory[]>([]);
   const systemConfig = ref({ authMode: "single" }); // Default
+  const dataVersion = ref(0);
 
   // Auth State
   const token = ref(localStorage.getItem("flat-nas-token") || "");
@@ -152,6 +154,14 @@ export const useMainStore = defineStore("main", () => {
   const isLanModeInited = ref(false);
   const ipFetchStatus = ref<"success" | "error" | "loading">("loading");
   const isPageUnloading = ref(false);
+  const globalDrag = ref({
+    active: false,
+    isFiles: false,
+    point: { x: 0, y: 0 },
+    depth: 0,
+    scope: "",
+  });
+  let globalDragBound = false;
 
   const getHeaders = () => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -175,6 +185,69 @@ export const useMainStore = defineStore("main", () => {
     const t = token.value || localStorage.getItem("flat-nas-token");
     if (!t || !isValidNetworkMode(mode)) return;
     socket.emit("network:mode", { token: t, mode });
+  };
+
+  const resetGlobalDrag = () => {
+    globalDrag.value.active = false;
+    globalDrag.value.isFiles = false;
+    globalDrag.value.depth = 0;
+    globalDrag.value.scope = "";
+  };
+
+  const isFilesDragEvent = (e: DragEvent) => {
+    const types = Array.from(e.dataTransfer?.types || []);
+    return types.includes("Files");
+  };
+
+  const resolveDragScope = (e: DragEvent) => {
+    const target = e.target as HTMLElement | null;
+    const scopeEl = target?.closest?.("[data-drag-scope]") as HTMLElement | null;
+    return scopeEl?.dataset.dragScope || "";
+  };
+
+  const initGlobalDrag = () => {
+    if (globalDragBound || typeof window === "undefined") return;
+    globalDragBound = true;
+
+    const onDragEnter = (e: DragEvent) => {
+      if (!isFilesDragEvent(e)) return;
+      globalDrag.value.depth += 1;
+      globalDrag.value.active = true;
+      globalDrag.value.isFiles = true;
+      globalDrag.value.point = { x: e.clientX, y: e.clientY };
+      globalDrag.value.scope = resolveDragScope(e);
+    };
+
+    const onDragOver = (e: DragEvent) => {
+      if (!isFilesDragEvent(e)) return;
+      e.preventDefault();
+      globalDrag.value.active = true;
+      globalDrag.value.isFiles = true;
+      globalDrag.value.point = { x: e.clientX, y: e.clientY };
+      globalDrag.value.scope = resolveDragScope(e);
+    };
+
+    const onDragLeave = () => {
+      if (!globalDrag.value.active) return;
+      globalDrag.value.depth = Math.max(0, globalDrag.value.depth - 1);
+      if (globalDrag.value.depth === 0) resetGlobalDrag();
+    };
+
+    const onDrop = () => resetGlobalDrag();
+    const onDragEnd = () => resetGlobalDrag();
+    const onPointerUp = () => resetGlobalDrag();
+    const onMouseUp = () => resetGlobalDrag();
+    const onBlur = () => resetGlobalDrag();
+
+    window.addEventListener("dragenter", onDragEnter, true);
+    window.addEventListener("dragover", onDragOver, true);
+    window.addEventListener("dragleave", onDragLeave, true);
+    window.addEventListener("drop", onDrop, true);
+    window.addEventListener("dragend", onDragEnd, true);
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("mouseup", onMouseUp, true);
+    window.addEventListener("blur", onBlur, true);
+
   };
 
   const scheduleNetworkModeBroadcast = (mode: string) => {
@@ -415,15 +488,27 @@ export const useMainStore = defineStore("main", () => {
   });
 
   const CACHE_KEY = "flat-nas-data-cache";
+  const normalizeVersion = (value: unknown) => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(0, Math.floor(value));
+    }
+    if (typeof value === "string") {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isFinite(parsed)) return Math.max(0, parsed);
+    }
+    return 0;
+  };
   const CACHE_WRITE_GUARD_MS = 15000;
   const SERVER_SNAPSHOT_RETRY_COUNT = 3;
   const SERVER_SNAPSHOT_RETRY_DELAY_MS = 1000;
+  const SERVER_SNAPSHOT_TIMEOUT_MS = 6000;
   const cacheLoadedAt = ref<number | null>(null);
   const hasServerSnapshot = ref(false);
   const deferredSaveRequested = ref(false);
 
   const saveToCache = (data: Record<string, unknown>) => {
     try {
+      const nextVersion = normalizeVersion(data.version ?? dataVersion.value);
       const cacheData = {
         groups: data.groups,
         widgets: data.widgets,
@@ -431,6 +516,7 @@ export const useMainStore = defineStore("main", () => {
         rssFeeds: data.rssFeeds,
         rssCategories: data.rssCategories,
         username: data.username || username.value,
+        version: nextVersion,
         timestamp: Date.now(),
       };
       localStorage.setItem(CACHE_KEY, JSON.stringify(cacheData));
@@ -458,6 +544,9 @@ export const useMainStore = defineStore("main", () => {
       if (cache.rssFeeds) rssFeeds.value = cache.rssFeeds;
       if (cache.rssCategories) rssCategories.value = cache.rssCategories;
       if (cache.systemConfig) systemConfig.value = cache.systemConfig;
+      if (typeof cache.version !== "undefined") {
+        dataVersion.value = normalizeVersion(cache.version);
+      }
 
       return true;
     } catch (e) {
@@ -481,6 +570,7 @@ export const useMainStore = defineStore("main", () => {
     }
   };
   const isServerSnapshotReady = computed(() => hasServerSnapshot.value);
+  const isClientReady = computed(() => hasServerSnapshot.value || cacheLoadedAt.value !== null);
 
   const ensureDefaultCommonGroup = () => {
     // 逻辑已移除：允许用户删除所有分组，不再强制恢复默认分组
@@ -502,10 +592,16 @@ export const useMainStore = defineStore("main", () => {
   };
 
   const handleDataUpdate = (data: BackupData) => {
+    const tStart = performance.now();
+    let tUser = tStart;
     // If we got username back, ensure it matches
     if (data.username && data.username !== username.value) {
       username.value = data.username;
       localStorage.setItem("flat-nas-username", data.username);
+    }
+    tUser = performance.now();
+    if (typeof data.version !== "undefined") {
+      dataVersion.value = normalizeVersion(data.version);
     }
 
     // Fix: Only restore items if groups is undefined (legacy data).
@@ -520,6 +616,7 @@ export const useMainStore = defineStore("main", () => {
     }
 
     ensureDefaultCommonGroup();
+    const tGroups = performance.now();
 
     if (Array.isArray(data.widgets)) {
       widgets.value = data.widgets;
@@ -654,6 +751,7 @@ export const useMainStore = defineStore("main", () => {
         },
       ];
     }
+    const tWidgets = performance.now();
 
     if (data.appConfig) appConfig.value = { ...appConfig.value, ...data.appConfig };
 
@@ -737,15 +835,27 @@ export const useMainStore = defineStore("main", () => {
         appConfig.value.widgetAreaRows = 4;
       }
     }
+    const tConfig = performance.now();
 
     if (data.rssFeeds) rssFeeds.value = data.rssFeeds;
     if (data.rssCategories) rssCategories.value = data.rssCategories;
+    const tRss = performance.now();
 
     // Fetch custom scripts separately
     fetchCustomScripts();
 
     checkUpdate();
     saveToCache(data);
+    const tEnd = performance.now();
+    console.log("handleDataUpdate timing", {
+      userMs: Math.round(tUser - tStart),
+      groupsMs: Math.round(tGroups - tUser),
+      widgetsMs: Math.round(tWidgets - tGroups),
+      configMs: Math.round(tConfig - tWidgets),
+      rssMs: Math.round(tRss - tConfig),
+      tailMs: Math.round(tEnd - tRss),
+      totalMs: Math.round(tEnd - tStart),
+    });
   };
 
   const fetchCustomScripts = async () => {
@@ -784,9 +894,62 @@ export const useMainStore = defineStore("main", () => {
       }
 
       handleDataUpdate(data);
+      if (!hasServerSnapshot.value) {
+        saveToCache(data);
+        markServerSnapshotReady();
+      }
     } catch (e) {
       console.error("Fetch data failed", e);
     }
+  };
+
+  let serverSnapshotRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  const fetchWithTimeout = async (
+    input: RequestInfo | URL,
+    init: RequestInit = {},
+    timeoutMs = SERVER_SNAPSHOT_TIMEOUT_MS,
+  ) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input, { ...init, signal: controller.signal });
+    } finally {
+      window.clearTimeout(timer);
+    }
+  };
+
+  const loadServerSnapshot = async () => {
+    const snapshotStart = performance.now();
+    const fetchStart = performance.now();
+    const res = await fetchWithTimeout("/api/data", { headers: getHeaders() });
+    const fetchMs = performance.now() - fetchStart;
+    if (!res.ok) {
+      throw new Error(`Init failed with status ${res.status}`);
+    }
+    const jsonStart = performance.now();
+    const data = await res.json();
+    const jsonMs = performance.now() - jsonStart;
+    if (data.systemConfig) {
+      systemConfig.value = data.systemConfig;
+    }
+
+    if (data.username) {
+      username.value = data.username;
+      localStorage.setItem("flat-nas-username", data.username);
+    }
+
+    const handleStart = performance.now();
+    handleDataUpdate(data);
+    const handleMs = performance.now() - handleStart;
+    saveToCache(data);
+    markServerSnapshotReady();
+    const totalMs = performance.now() - snapshotStart;
+    console.log("init snapshot timing", {
+      fetchMs: Math.round(fetchMs),
+      jsonMs: Math.round(jsonMs),
+      handleMs: Math.round(handleMs),
+      totalMs: Math.round(totalMs),
+    });
   };
 
   const init = async () => {
@@ -807,31 +970,13 @@ export const useMainStore = defineStore("main", () => {
       let lastError: unknown = null;
       for (let attempt = 0; attempt < SERVER_SNAPSHOT_RETRY_COUNT; attempt++) {
         try {
-          const res = await fetch("/api/data", { headers: getHeaders() });
-          if (!res.ok) {
-            lastError = new Error(`Init failed with status ${res.status}`);
-          } else {
-            const data = await res.json();
-            if (data.systemConfig) {
-              systemConfig.value = data.systemConfig;
-            }
-
-            if (data.username) {
-              username.value = data.username;
-              localStorage.setItem("flat-nas-username", data.username);
-            }
-
-            handleDataUpdate(data);
-            saveToCache(data);
-            markServerSnapshotReady();
-            serverSnapshotLoaded = true;
-
-            setTimeout(() => {
-              checkUpdate();
-              fetchLuckyStunData();
-            }, 2000);
-            break;
-          }
+          await loadServerSnapshot();
+          serverSnapshotLoaded = true;
+          setTimeout(() => {
+            checkUpdate();
+            fetchLuckyStunData();
+          }, 2000);
+          break;
         } catch (e) {
           lastError = e;
         }
@@ -847,6 +992,21 @@ export const useMainStore = defineStore("main", () => {
         if (fallbackLoaded && cacheLoadedAt.value === null) {
           cacheLoadedAt.value = Date.now();
         }
+        if (!serverSnapshotRetryTimer) {
+          serverSnapshotRetryTimer = setTimeout(async () => {
+            serverSnapshotRetryTimer = null;
+            if (hasServerSnapshot.value) return;
+            try {
+              await loadServerSnapshot();
+              setTimeout(() => {
+                checkUpdate();
+                fetchLuckyStunData();
+              }, 2000);
+            } catch (e) {
+              console.error("Init retry failed", e);
+            }
+          }, SERVER_SNAPSHOT_RETRY_DELAY_MS * 3);
+        }
       }
     } finally {
       isInitializing = false;
@@ -859,20 +1019,26 @@ export const useMainStore = defineStore("main", () => {
           const w = widgets.value.find((x) => x.id === widgetId);
           if (w) w.data = content;
         });
-        socket.on("data-updated", async ({ username: updatedUser }: { username: string }) => {
-          // 如果有正在进行的保存或等待中的保存，则忽略本次更新，以本地状态为准
-          // 避免快速操作时被旧的服务器状态覆盖
-          if (saveTimer !== null || isSaving.value) {
-            return;
-          }
+        socket.on(
+          "data-updated",
+          async ({ username: updatedUser, version }: { username: string; version?: number }) => {
+            // 如果有正在进行的保存或等待中的保存，则忽略本次更新，以本地状态为准
+            // 避免快速操作时被旧的服务器状态覆盖
+            if (saveTimer !== null || isSaving.value) {
+              return;
+            }
 
-          if (
-            updatedUser === username.value ||
-            (username.value === "admin" && updatedUser === "admin")
-          ) {
-            await fetchAndProcessData();
-          }
-        });
+            if (
+              updatedUser === username.value ||
+              (username.value === "admin" && updatedUser === "admin")
+            ) {
+              if (typeof version !== "undefined") {
+                dataVersion.value = normalizeVersion(version);
+              }
+              await fetchAndProcessData();
+            }
+          },
+        );
         socket.on("network:heartbeat", () => {
           lastNetworkHeartbeatAt = Date.now();
           updateNetworkSyncMode(true);
@@ -888,6 +1054,11 @@ export const useMainStore = defineStore("main", () => {
           }
           applyRemoteNetworkMode(mode);
         });
+        socket.on("connect", () => {
+          if (!isInitializing) {
+            fetchAndProcessData();
+          }
+        });
         socketListenersBound = true;
       }
       if (token.value) {
@@ -900,13 +1071,20 @@ export const useMainStore = defineStore("main", () => {
   const isSaving = ref(false);
   let lastSavedJson = "";
 
-  const saveData = async (immediate = false) => {
+  const conflictState = ref({
+    show: false,
+    serverVersion: 0,
+    clientVersion: 0,
+  });
+
+  const saveData = async (immediate = false, force = false) => {
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
     }
 
     const doSave = async () => {
+      let shouldSyncAfterConflict = false;
       if (isPageUnloading.value) {
         return;
       }
@@ -919,12 +1097,19 @@ export const useMainStore = defineStore("main", () => {
         if (!isLogged.value) {
           return;
         }
+
+        // Handle force save: adopt server version to bypass conflict check
+        if (force && conflictState.value.show) {
+          dataVersion.value = normalizeVersion(conflictState.value.serverVersion);
+        }
+
         const body: Record<string, unknown> = {
           groups: groups.value,
           widgets: widgets.value,
           appConfig: appConfig.value,
           rssFeeds: rssFeeds.value,
           rssCategories: rssCategories.value,
+          version: dataVersion.value,
         };
         if (typeof password.value === "string" && password.value.length > 0) {
           body.password = password.value;
@@ -945,10 +1130,31 @@ export const useMainStore = defineStore("main", () => {
         });
 
         if (res.ok) {
-          lastSavedJson = json;
+          conflictState.value.show = false;
+          const result = await res.json().catch(() => null);
+          if (result && typeof (result as { version?: number }).version !== "undefined") {
+            dataVersion.value = normalizeVersion((result as { version?: number }).version);
+          }
+          lastSavedJson = JSON.stringify({ ...body, version: dataVersion.value });
           if (body.password) {
             password.value = "";
           }
+        }
+        if (res.status === 409) {
+          const result = await res.json().catch(() => null);
+          const serverVer = (result as { currentVersion?: number } | null)?.currentVersion;
+          if (typeof serverVer !== "undefined") {
+            const v = normalizeVersion(serverVer);
+            conflictState.value = {
+              show: true,
+              serverVersion: v,
+              clientVersion: dataVersion.value,
+            };
+            // Optional: update local version to match server if we want to auto-sync next time?
+            // But for ConflictModal, we want to keep them separate.
+          }
+          // Do NOT set shouldSyncAfterConflict = true here, let the UI handle it via ConflictModal
+          return;
         }
 
         if (res.status === 401) {
@@ -968,6 +1174,9 @@ export const useMainStore = defineStore("main", () => {
         console.error("保存失败", e);
       } finally {
         isSaving.value = false;
+        if (shouldSyncAfterConflict) {
+          await fetchAndProcessData();
+        }
       }
     };
 
@@ -1231,8 +1440,8 @@ export const useMainStore = defineStore("main", () => {
     () => [appConfig.value.widgetAreaCols, appConfig.value.widgetAreaRows] as const,
     ([cols, rows]) => {
       const normalize = (v: unknown, fallback: number) => {
-        const n = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : fallback;
-        return Math.min(16, Math.max(1, n));
+        const n = typeof v === "number" && Number.isFinite(v) ? v : fallback;
+        return Math.min(16, Math.max(0.5, n));
       };
       const nextCols = normalize(cols, 4);
       const nextRows = normalize(rows, 4);
@@ -1344,6 +1553,8 @@ export const useMainStore = defineStore("main", () => {
     webPaginationActiveGroupId,
     isLanModeInited,
     ipFetchStatus,
+    globalDrag,
+    initGlobalDrag,
     rssFeeds,
     rssCategories,
     init,
@@ -1382,5 +1593,7 @@ export const useMainStore = defineStore("main", () => {
     resourceVersion,
     updateCustomScripts,
     isServerSnapshotReady,
+    isClientReady,
+    conflictState,
   };
 });

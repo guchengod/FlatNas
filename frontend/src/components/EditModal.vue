@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed, shallowRef } from "vue";
+import { useDraggable, useWindowSize } from "@vueuse/core";
 import type { NavItem, SimpleIcon, AliIcon } from "@/types";
 import { useMainStore } from "../stores/main";
 import IconUploader from "./IconUploader.vue";
@@ -859,17 +860,45 @@ const submit = async () => {
     isSaving.value = false;
   }
 };
+
+// --- Draggable Logic ---
+const modalRef = ref<HTMLElement | null>(null);
+const headerRef = ref<HTMLElement | null>(null);
+const { width: winWidth, height: winHeight } = useWindowSize();
+
+const { style: draggableStyle, x, y } = useDraggable(modalRef, {
+  initialValue: { x: winWidth.value / 2 - 224, y: winHeight.value / 2 - 300 },
+  handle: headerRef,
+  preventDefault: true,
+});
+
+// Reset position when opening
+watch(
+  () => props.show,
+  (val) => {
+    if (val) {
+      // Center it
+      x.value = winWidth.value / 2 - 224; // 448px / 2
+      y.value = Math.max(20, winHeight.value / 2 - 300);
+    }
+  }
+);
 </script>
 
 <template>
   <div
     v-if="show"
-    class="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+    class="fixed inset-0 z-50 pointer-events-none"
   >
     <div
-      class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100"
+      ref="modalRef"
+      :style="draggableStyle"
+      class="fixed bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden pointer-events-auto"
     >
-      <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-white">
+      <div
+        ref="headerRef"
+        class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-white cursor-move select-none"
+      >
         <h3 class="text-lg font-bold text-gray-800">{{ data ? "修改项目" : "添加新项目" }}</h3>
 
         <div class="flex items-center gap-2 ml-auto mr-4">
@@ -1254,7 +1283,11 @@ const submit = async () => {
                 <span v-else class="text-gray-300 text-xs">预览</span>
               </template>
               <template v-else>
-                <span v-if="form.icon" class="text-3xl">{{ form.icon }}</span>
+                <span
+                  v-if="form.icon"
+                  class="text-3xl transition-transform duration-200"
+                  :style="{ transform: `scale(${(form.iconSize ?? 100) / 100})` }"
+                >{{ form.icon }}</span>
                 <span v-else class="text-gray-300 text-xs">Emoji</span>
               </template>
             </div>
@@ -1293,22 +1326,23 @@ const submit = async () => {
               或
             </div>
 
-            <div
-              class="flex items-center gap-2 bg-gray-50 px-2 py-1.5 rounded-lg border border-gray-100"
-            >
-              <span class="text-xs text-gray-400 whitespace-nowrap">缩放</span>
-              <input
-                type="range"
-                v-model.number="form.iconSize"
-                min="20"
-                max="200"
-                step="5"
-                class="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-400"
-              />
-              <span class="text-xs text-gray-500 w-8 text-right">{{ form.iconSize }}%</span>
-            </div>
-
             <IconUploader v-model="form.icon" />
+          </div>
+
+          <!-- Icon Size Slider (Shared) -->
+          <div
+            class="flex items-center gap-2 bg-gray-50 px-2 py-1.5 rounded-lg border border-gray-100 mt-3"
+          >
+            <span class="text-xs text-gray-400 whitespace-nowrap">缩放</span>
+            <input
+              type="range"
+              v-model.number="form.iconSize"
+              min="20"
+              max="200"
+              step="5"
+              class="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-400"
+            />
+            <span class="text-xs text-gray-500 w-8 text-right">{{ form.iconSize }}%</span>
           </div>
         </div>
 

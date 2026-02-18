@@ -222,9 +222,7 @@ func buildWeiboLink(wordScheme, word, link string) string {
 		if strings.HasPrefix(scheme, "http://") || strings.HasPrefix(scheme, "https://") {
 			return scheme
 		}
-		if strings.HasPrefix(scheme, "?") {
-			scheme = strings.TrimPrefix(scheme, "?")
-		}
+		scheme = strings.TrimPrefix(scheme, "?")
 		if strings.Contains(scheme, "q=") || strings.Contains(scheme, "%23") || strings.Contains(scheme, "&") {
 			return "https://s.weibo.com/weibo?" + scheme
 		}

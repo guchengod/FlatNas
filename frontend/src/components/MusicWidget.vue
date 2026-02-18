@@ -120,10 +120,10 @@ const syncPlayerState = computed(
   () => props.widget.data?.syncPlayerState === true,
 );
 const isMiniSmall = computed(
-  () => props.widget.colSpan === 1 && props.widget.rowSpan === 1,
+  () => (props.widget.colSpan ?? 1) <= 1 && (props.widget.rowSpan ?? 1) <= 1,
 );
 const isTallMini = computed(
-  () => props.widget.colSpan === 1 && props.widget.rowSpan === 3,
+  () => (props.widget.colSpan ?? 1) <= 1 && (props.widget.rowSpan ?? 1) >= 2.5,
 );
 const browseTracks = ref<Track[]>([]);
 const miniLoading = ref(false);
@@ -1744,7 +1744,7 @@ watch(syncPlayerState, (enabled) => {
     ></audio>
 
     <!-- Header / Now Playing -->
-    <template v-if="widget.colSpan === 1 && widget.rowSpan === 1">
+    <template v-if="isMiniSmall">
       <!-- Mini Mode (1x1) -->
       <div class="w-full h-full relative z-10">
         <div
@@ -1921,7 +1921,7 @@ watch(syncPlayerState, (enabled) => {
       </div>
     </template>
 
-    <template v-else-if="widget.colSpan === 1 && widget.rowSpan === 3">
+    <template v-else-if="isTallMini">
       <div class="w-full h-full relative z-10">
         <div
           class="aplayer aplayer-mini is-tall"

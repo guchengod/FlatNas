@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import type { CustomScript } from "@/types";
 import { VueDraggable as Draggable } from "vue-draggable-plus";
+import { useMainStore } from "@/stores/main";
 
 const props = defineProps<{
   modelValue: CustomScript[];
@@ -14,10 +15,11 @@ const emit = defineEmits<{
   (e: "change"): void;
 }>();
 
+const store = useMainStore();
 const list = ref<CustomScript[]>(props.modelValue || []);
 const activeId = ref<string | null>(null);
 const deleteConfirmId = ref<string | null>(null);
-const isDragging = ref(false);
+const dragState = computed(() => store.globalDrag);
 let deleteTimeout: number | null = null;
 
 watch(
@@ -46,7 +48,6 @@ const readFileContent = (file: File): Promise<string> => {
 };
 
 const handleFileDrop = async (e: DragEvent) => {
-  isDragging.value = false;
   const files = e.dataTransfer?.files;
   if (!files || files.length === 0) return;
 
@@ -73,15 +74,6 @@ const handleFileDrop = async (e: DragEvent) => {
     }
   }
   updateList();
-};
-
-const onDragLeave = (e: DragEvent) => {
-  const target = e.relatedTarget as Node;
-  const currentTarget = e.currentTarget as Node;
-  if (target && currentTarget.contains(target)) {
-    return;
-  }
-  isDragging.value = false;
 };
 
 const addItem = () => {
@@ -128,13 +120,15 @@ const toggleProxy = (item: CustomScript) => {
 <template>
   <div
     class="space-y-4 relative"
-    @dragover.prevent="isDragging = true"
-    @dragleave.prevent="onDragLeave"
+    data-drag-scope="script-manager"
+    @dragenter.prevent
+    @dragover.prevent
     @drop.prevent="handleFileDrop"
   >
     <div
-      v-if="isDragging"
-      class="absolute inset-0 z-50 bg-blue-50 bg-opacity-90 border-2 border-dashed border-blue-500 rounded-xl flex flex-col items-center justify-center text-blue-500 pointer-events-none transition-all"
+      v-if="dragState.active && dragState.isFiles && dragState.scope === 'script-manager'"
+      class="fixed z-50 bg-blue-50 bg-opacity-90 border-2 border-dashed border-blue-500 rounded-xl flex flex-col items-center justify-center text-blue-500 pointer-events-none transition-all -translate-x-1/2 -translate-y-1/2 px-6 py-4"
+      :style="{ left: `${dragState.point.x}px`, top: `${dragState.point.y}px` }"
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"

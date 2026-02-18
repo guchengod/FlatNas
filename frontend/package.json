@@ -10,14 +10,16 @@
   "scripts": {
     "dev": "vite",
     "server": "go run ../backend",
-    "start": "run-p server dev",
+    "wait-backend": "node -e \"const base=process.env.VITE_BACKEND||'http://127.0.0.1:3000';const target=new URL('/api/system-config',base).toString();const timeoutMs=60000;const intervalMs=500;const start=Date.now();const attempt=async()=>{try{const ctrl=new AbortController();const t=setTimeout(()=>ctrl.abort(),1500);const res=await fetch(target,{signal:ctrl.signal});clearTimeout(t);if(res.ok){process.exit(0);}}catch(e){}if(Date.now()-start>timeoutMs){console.error('Backend health check timed out:',target);process.exit(1);}setTimeout(attempt,intervalMs);};attempt();\"",
+    "start": "run-p server \"wait-backend && dev\"",
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
     "lint": "eslint . --fix --cache",
     "format": "prettier --write --experimental-cli src/",
-    "test": "vitest --environment=jsdom"
+    "test": "vitest --environment=jsdom",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@types/dompurify": "^3.0.5",
@@ -45,6 +47,8 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@pinia/testing": "^1.0.3",
+    "@playwright/test": "^1.52.0",
     "@tailwindcss/postcss": "^4.1.17",
     "@tsconfig/node24": "^24.0.3",
     "@types/jsdom": "^27.0.0",

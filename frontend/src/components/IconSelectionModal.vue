@@ -22,6 +22,7 @@ const startTimer = () => {
   timer = setInterval(() => {
     timeoutSeconds.value--;
     if (timeoutSeconds.value <= 0) {
+      clearInterval(timer); // Ensure timer stops
       if (props.candidates.length > 0) {
         const first = props.candidates[0];
         if (first) {
@@ -38,15 +39,16 @@ const selectIcon = (icon: string) => {
   emit("update:show", false);
 };
 
+// Start timer when show becomes true
 watch(
   () => props.show,
   (val) => {
+    clearInterval(timer); // Clear any existing timer first
     if (val) {
       startTimer();
-    } else {
-      clearInterval(timer);
     }
   },
+  { immediate: true }
 );
 
 onUnmounted(() => clearInterval(timer));
@@ -91,14 +93,15 @@ const presetIcons = ["icons/douyin.svg"];
 </script>
 
 <template>
-  <div
-    v-if="show"
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm"
-    @click.self="$emit('update:show', false)"
-  >
+  <Teleport to="body">
     <div
-      class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-2xl max-h-[80vh] flex flex-col animate-in fade-in zoom-in duration-200"
+      v-if="show"
+      class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm pointer-events-auto"
+      @click.self="$emit('update:show', false)"
     >
+      <div
+        class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-2xl max-h-[80vh] flex flex-col animate-in fade-in zoom-in duration-200"
+      >
       <div class="flex justify-between items-center mb-4">
         <h3 class="text-lg font-bold text-gray-900 flex items-center gap-2">
           <span v-if="source === 'local'">📁 本地图标</span>
@@ -187,4 +190,5 @@ const presetIcons = ["icons/douyin.svg"];
       </div>
     </div>
   </div>
+  </Teleport>
 </template>

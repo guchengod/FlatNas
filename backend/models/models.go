@@ -46,19 +46,19 @@ type Widget struct {
 	IsPublic bool                    `json:"isPublic"`
 	Data     any                     `json:"data"` // Flexible
 	Layouts  map[string]WidgetLayout `json:"layouts,omitempty"`
-	X        int                     `json:"x,omitempty"`
-	Y        int                     `json:"y,omitempty"`
-	W        int                     `json:"w,omitempty"`
-	H        int                     `json:"h,omitempty"`
-	ColSpan  int                     `json:"colSpan,omitempty"`
-	RowSpan  int                     `json:"rowSpan,omitempty"`
+	X        float64                 `json:"x,omitempty"`
+	Y        float64                 `json:"y,omitempty"`
+	W        float64                 `json:"w,omitempty"`
+	H        float64                 `json:"h,omitempty"`
+	ColSpan  float64                 `json:"colSpan,omitempty"`
+	RowSpan  float64                 `json:"rowSpan,omitempty"`
 }
 
 type WidgetLayout struct {
-	X int `json:"x"`
-	Y int `json:"y"`
-	W int `json:"w"`
-	H int `json:"h"`
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
 }
 
 type AppConfig struct {

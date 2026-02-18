@@ -93,6 +93,7 @@ func main() {
 	handlers.BindMemoHandlers(server)
 	handlers.BindTodoHandlers(server)
 	handlers.BindNetworkHandlers(server)
+	handlers.SetSocketServer(server)
 	go server.Serve()
 	defer server.Close()
 

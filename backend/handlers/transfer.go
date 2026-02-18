@@ -89,19 +89,20 @@ func GetTransferItems(c *gin.Context) {
 
 	filtered := []models.TransferItem{}
 	for _, item := range data.Items {
-		if itemType == "photo" {
+		switch itemType {
+		case "photo":
 			if item.Type == "file" && item.File != nil && strings.HasPrefix(item.File.Type, "image/") {
 				filtered = append(filtered, item)
 			}
-		} else if itemType == "file" {
+		case "file":
 			if item.Type == "file" {
 				filtered = append(filtered, item)
 			}
-		} else if itemType == "text" {
+		case "text":
 			if item.Type == "text" {
 				filtered = append(filtered, item)
 			}
-		} else {
+		default:
 			filtered = append(filtered, item)
 		}
 	}

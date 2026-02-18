@@ -53,7 +53,7 @@ func GetConfigVersions(c *gin.Context) {
 		if err != nil {
 			continue
 		}
-		
+
 		var vf VersionFile
 		if err := json.Unmarshal(content, &vf); err != nil {
 			continue
@@ -106,7 +106,7 @@ func SaveConfigVersion(c *gin.Context) {
 
 	now := time.Now().UnixMilli()
 	id := strconv.FormatInt(now, 10)
-	
+
 	vf := VersionFile{
 		ID:        id,
 		Label:     payload.Label,
@@ -157,7 +157,7 @@ func RestoreConfigVersion(c *gin.Context) {
 	utils.ReadJSON(userFile, &currentData)
 
 	newData := vf.Data
-	
+
 	// Preserve critical fields
 	if currentData != nil {
 		if pwd, ok := currentData["password"]; ok {
@@ -169,6 +169,11 @@ func RestoreConfigVersion(c *gin.Context) {
 	} else {
 		newData["username"] = username
 	}
+	currentVersion := normalizeVersion(nil)
+	if currentData != nil {
+		currentVersion = normalizeVersion(currentData["version"])
+	}
+	newData["version"] = currentVersion + 1
 
 	if err := utils.WriteJSON(userFile, newData); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to restore version"})
@@ -186,8 +191,8 @@ func DeleteConfigVersion(c *gin.Context) {
 	}
 
 	if _, err := strconv.ParseInt(id, 10, 64); err != nil {
-		 c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
-		 return
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		return
 	}
 
 	filename := filepath.Join(config.ConfigVersionsDir, id+".json")

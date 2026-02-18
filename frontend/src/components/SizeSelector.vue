@@ -1,6 +1,6 @@
 <template>
   <div
-    class="absolute bottom-12 right-2 bg-white rounded-xl shadow-xl border border-gray-200 p-3 z-[9999] w-48 animate-fade-in"
+    class="absolute bottom-12 right-2 bg-white rounded-xl shadow-xl border border-gray-200 p-3 z-[9999] w-56 animate-fade-in"
     @click.stop
     @mousedown.stop
     @touchstart.stop
@@ -8,13 +8,13 @@
   >
     <div class="mb-2 text-xs font-bold text-gray-500 flex justify-between items-center">
       <span>调整尺寸</span>
-      <span class="text-blue-600">{{ currentCols }} x {{ currentRows }}</span>
+      <span class="text-blue-600">{{ formatSize(currentCols) }} x {{ formatSize(currentRows) }}</span>
     </div>
-    <div class="grid grid-cols-4 gap-1.5" @mouseleave="hoverIndex = null">
+    <div class="grid grid-cols-8 gap-1.5" @mouseleave="hoverIndex = null">
       <div
-        v-for="i in 16"
+        v-for="i in 64"
         :key="i"
-        class="w-8 h-8 rounded-md border-2 transition-all cursor-pointer"
+        class="w-5 h-5 rounded-md border-2 transition-all cursor-pointer"
         :class="getCellClass(i)"
         @mouseenter="hoverIndex = i"
         @click="selectSize(i)"
@@ -38,31 +38,28 @@ const emit = defineEmits(['select'])
 
 const hoverIndex = ref<number | null>(null)
 
-const getCoords = (i: number) => {
-  // i is 1..16
-  // row is ceil(i / 4)
-  // col is (i - 1) % 4 + 1
-  const r = Math.ceil(i / 4)
-  const c = ((i - 1) % 4) + 1
-  return { c, r }
+const getSize = (i: number) => {
+  const r = Math.ceil(i / 8)
+  const c = ((i - 1) % 8) + 1
+  return { c: c / 2, r: r / 2 }
 }
 
 const currentCols = computed(() => {
   if (hoverIndex.value !== null) {
-    return getCoords(hoverIndex.value).c
+    return getSize(hoverIndex.value).c
   }
   return props.currentCol || 1
 })
 
 const currentRows = computed(() => {
   if (hoverIndex.value !== null) {
-    return getCoords(hoverIndex.value).r
+    return getSize(hoverIndex.value).r
   }
   return props.currentRow || 1
 })
 
 const getCellClass = (i: number) => {
-  const { c, r } = getCoords(i)
+  const { c, r } = getSize(i)
   const targetC = currentCols.value
   const targetR = currentRows.value
 
@@ -73,8 +70,13 @@ const getCellClass = (i: number) => {
 }
 
 const selectSize = (i: number) => {
-  const { c, r } = getCoords(i)
+  const { c, r } = getSize(i)
   emit('select', { colSpan: c, rowSpan: r })
+}
+
+const formatSize = (value: number) => {
+  if (Number.isInteger(value)) return value.toString()
+  return value.toFixed(1)
 }
 </script>
 

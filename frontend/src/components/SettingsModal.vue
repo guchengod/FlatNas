@@ -2012,7 +2012,8 @@ watch(activeTab, (val) => {
                     <input
                       type="number"
                       v-model.number="store.appConfig.widgetAreaCols"
-                      min="1"
+                      min="0.5"
+                      step="0.5"
                       max="16"
                       class="w-20 px-2 py-2 border border-gray-200 rounded-xl focus:border-gray-900 outline-none text-sm bg-white"
                     />
@@ -2020,7 +2021,8 @@ watch(activeTab, (val) => {
                     <input
                       type="number"
                       v-model.number="store.appConfig.widgetAreaRows"
-                      min="1"
+                      min="0.5"
+                      step="0.5"
                       max="16"
                       class="w-20 px-2 py-2 border border-gray-200 rounded-xl focus:border-gray-900 outline-none text-sm bg-white"
                     />

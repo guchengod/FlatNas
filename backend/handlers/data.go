@@ -4,16 +4,52 @@ import (
 	"flatnasgo-backend/config"
 	"flatnasgo-backend/models"
 	"flatnasgo-backend/utils"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	socketio "github.com/googollee/go-socket.io"
 )
 
+var socketServer *socketio.Server
+
+type getDataCacheEntry struct {
+	dataMod  time.Time
+	sysMod   time.Time
+	response map[string]interface{}
+}
+
+var getDataCache = map[string]getDataCacheEntry{}
+var getDataCacheMu sync.RWMutex
+
+func normalizeVersion(v interface{}) int64 {
+	switch t := v.(type) {
+	case float64:
+		return int64(t)
+	case int:
+		return int64(t)
+	case int64:
+		return t
+	case string:
+		if n, err := strconv.ParseInt(t, 10, 64); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func SetSocketServer(server *socketio.Server) {
+	socketServer = server
+}
+
 func GetData(c *gin.Context) {
+	start := time.Now()
 	username := c.GetString("username")
 	isGuest := false
 	if username == "" {
@@ -22,23 +58,61 @@ func GetData(c *gin.Context) {
 	}
 
 	var sysConfig models.SystemConfig
+	sysStatStart := time.Now()
+	sysInfo, sysStatErr := os.Stat(config.SystemConfigFile)
+	sysStatMs := time.Since(sysStatStart).Milliseconds()
+	sysReadStart := time.Now()
 	utils.ReadJSON(config.SystemConfigFile, &sysConfig)
+	sysReadMs := time.Since(sysReadStart).Milliseconds()
 
 	userFile := filepath.Join(config.UsersDir, username+".json")
 	if username == "admin" && sysConfig.AuthMode == "single" {
 		userFile = filepath.Join(config.DataDir, "data.json")
 	}
 
+	userStatStart := time.Now()
+	userInfo, userStatErr := os.Stat(userFile)
+	userStatMs := time.Since(userStatStart).Milliseconds()
+	dataMod := time.Time{}
+	if userStatErr == nil {
+		dataMod = userInfo.ModTime()
+	}
+	sysMod := time.Time{}
+	if sysStatErr == nil {
+		sysMod = sysInfo.ModTime()
+	}
+
+	cacheKey := userFile
+	if isGuest {
+		cacheKey += "|guest"
+	} else {
+		cacheKey += "|auth"
+	}
+	if userStatErr == nil && sysStatErr == nil {
+		getDataCacheMu.RLock()
+		entry, ok := getDataCache[cacheKey]
+		getDataCacheMu.RUnlock()
+		if ok && entry.dataMod.Equal(dataMod) && entry.sysMod.Equal(sysMod) {
+			totalMs := time.Since(start).Milliseconds()
+			log.Printf("GetData cache hit user=%s guest=%v sysStatMs=%d userStatMs=%d sysReadMs=%d totalMs=%d", username, isGuest, sysStatMs, userStatMs, sysReadMs, totalMs)
+			c.JSON(http.StatusOK, entry.response)
+			return
+		}
+	}
+
 	// Use map[string]interface{} to preserve all fields
 	var userData map[string]interface{}
+	userReadStart := time.Now()
 	if err := utils.ReadJSON(userFile, &userData); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User data not found"})
 		return
 	}
+	userReadMs := time.Since(userReadStart).Milliseconds()
 
 	// Remove password from response
 	delete(userData, "password")
 
+	filterStart := time.Now()
 	if isGuest {
 		// Filter public items manually in the map structure
 		// This is tricky with untyped map, but necessary to preserve data integrity
@@ -79,6 +153,7 @@ func GetData(c *gin.Context) {
 			userData["widgets"] = filteredWidgets
 		}
 	}
+	filterMs := time.Since(filterStart).Milliseconds()
 
 	// Inject system config
 	userData["systemConfig"] = sysConfig
@@ -86,6 +161,21 @@ func GetData(c *gin.Context) {
 	if _, ok := userData["username"]; !ok {
 		userData["username"] = username
 	}
+	if _, ok := userData["version"]; !ok {
+		userData["version"] = int64(0)
+	}
+
+	if userStatErr == nil && sysStatErr == nil {
+		getDataCacheMu.Lock()
+		getDataCache[cacheKey] = getDataCacheEntry{
+			dataMod:  dataMod,
+			sysMod:   sysMod,
+			response: userData,
+		}
+		getDataCacheMu.Unlock()
+	}
+	totalMs := time.Since(start).Milliseconds()
+	log.Printf("GetData cache miss user=%s guest=%v sysStatMs=%d userStatMs=%d sysReadMs=%d userReadMs=%d filterMs=%d totalMs=%d", username, isGuest, sysStatMs, userStatMs, sysReadMs, userReadMs, filterMs, totalMs)
 
 	c.JSON(http.StatusOK, userData)
 }
@@ -158,6 +248,19 @@ func SaveData(c *gin.Context) {
 	if existingData == nil {
 		existingData = make(map[string]interface{})
 	}
+	existingVersion := normalizeVersion(existingData["version"])
+	clientVersion := int64(0)
+	hasClientVersion := false
+	if v, ok := payload["version"]; ok {
+		clientVersion = normalizeVersion(v)
+		hasClientVersion = true
+	}
+	if hasClientVersion && clientVersion != existingVersion {
+		c.JSON(http.StatusConflict, gin.H{"error": "Version conflict", "currentVersion": existingVersion})
+		return
+	}
+	newVersion := existingVersion + 1
+	payload["version"] = newVersion
 
 	// 3. Handle Password Hashing
 	// Check if payload has a password string
@@ -204,7 +307,14 @@ func SaveData(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	if socketServer != nil {
+		socketServer.BroadcastToNamespace("/", "data-updated", map[string]interface{}{
+			"username": username,
+			"version":  newVersion,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "version": newVersion})
 }
 
 // ImportData handles importing JSON configuration

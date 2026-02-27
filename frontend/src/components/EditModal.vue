@@ -5,6 +5,7 @@ import type { NavItem, SimpleIcon, AliIcon } from "@/types";
 import { useMainStore } from "../stores/main";
 import IconUploader from "./IconUploader.vue";
 import IconSelectionModal from "./IconSelectionModal.vue";
+import GroupSelector from "./GroupSelector.vue";
 import Fuse from "fuse.js";
 
 // 接收父组件传来的数据
@@ -63,6 +64,8 @@ const searchSource = ref<"local" | "api">("local");
 const localIcons = shallowRef<string[]>([]);
 const simpleIconsData = shallowRef<SimpleIcon[] | null>(null);
 const aliIconsData = shallowRef<AliIcon[] | null>(null);
+
+const localGroupId = ref("");
 
 // 表单数据 (合并管理，比以前分散的 ref 更整洁)
 interface EditForm extends Omit<NavItem, "id" | "backupUrls" | "backupLanUrls"> {
@@ -644,6 +647,7 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
+      localGroupId.value = props.groupId || "";
       if (props.data) {
         // 编辑模式：回填数据
         form.value = {
@@ -852,7 +856,7 @@ const submit = async () => {
 
     emit("save", {
       item: { ...form.value, id: props.data?.id },
-      groupId: props.groupId,
+      groupId: localGroupId.value || props.groupId,
     });
 
     close();
@@ -902,6 +906,8 @@ watch(
         <h3 class="text-lg font-bold text-gray-800">{{ data ? "修改项目" : "添加新项目" }}</h3>
 
         <div class="flex items-center gap-2 ml-auto mr-4">
+          <GroupSelector v-model="localGroupId" />
+          <div class="w-px h-4 bg-gray-200 mx-1"></div>
           <span class="text-xs font-bold text-gray-500">公开</span>
           <label class="relative inline-flex items-center cursor-pointer">
             <input type="checkbox" v-model="form.isPublic" class="sr-only peer" />

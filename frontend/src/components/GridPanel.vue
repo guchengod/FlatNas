@@ -1227,8 +1227,25 @@ const handleSave = (payload: { item: NavItem; groupId?: string }) => {
     return;
   }
 
-  if (payload.item.id) store.updateItem(payload.item);
-  else if (payload.groupId)
+  if (payload.item.id) {
+    // Check for group move
+    const targetGroupId = payload.groupId;
+    let moved = false;
+    
+    if (targetGroupId) {
+      const currentGroup = store.groups.find(g => g.items.some(i => i.id === payload.item.id));
+      if (currentGroup && currentGroup.id !== targetGroupId) {
+        // Move item: remove from old group, add to new group
+        store.deleteItem(payload.item.id);
+        store.addItem(payload.item, targetGroupId);
+        moved = true;
+      }
+    }
+    
+    if (!moved) {
+      store.updateItem(payload.item);
+    }
+  } else if (payload.groupId)
     store.addItem({ ...payload.item, id: Date.now().toString() }, payload.groupId);
 };
 const normalizeGridSpan = (value: number) => Math.round(value * 2) / 2;

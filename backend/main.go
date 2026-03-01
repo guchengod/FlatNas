@@ -203,6 +203,7 @@ func main() {
 			authorized.DELETE("/mobile_backgrounds/:name", handlers.DeleteMobileBackground)
 			authorized.POST("/backgrounds/upload", handlers.UploadBackground)
 			authorized.POST("/mobile_backgrounds/upload", handlers.UploadMobileBackground)
+			authorized.POST("/music/upload", handlers.UploadMusic) // Added Music Upload
 
 			// Transfer
 			api.GET("/transfer/items", handlers.GetTransferItems)

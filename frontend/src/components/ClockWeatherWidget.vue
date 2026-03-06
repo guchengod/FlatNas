@@ -2,9 +2,13 @@
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { useMainStore } from "../stores/main";
 import type { WidgetConfig } from "@/types";
+import { isValidCity, resolveCityFromIp, getFallbackCity, formatLocationSource } from "@/utils/weather";
 
 const props = defineProps<{ widget: WidgetConfig }>();
 const store = useMainStore();
+const locationSource = ref<"auto" | "manual" | "cache" | "fallback">("auto");
+const debugCity = ref("");
+const showDebugBadge = import.meta.env.DEV;
 
 // Watch for weather source changes
 watch(
@@ -161,21 +165,25 @@ const isCacheValid = (timestamp: number, duration: number) => {
 // 获取天气
 const fetchWeather = async (force = false) => {
   try {
-    let city = "本地";
+    let city = "Shanghai";
+    let source: "auto" | "manual" | "cache" | "fallback" = "auto";
 
     // 优先使用自定义城市
     if (props.widget?.data?.city) {
       city = props.widget.data.city;
+      source = "manual";
     } else {
       // 尝试从缓存读取自动定位城市 (缓存 1 小时)
-      const cachedCity = localStorage.getItem("flatnas_auto_city");
+      const cachedCityStr = localStorage.getItem("flatnas_auto_city");
       let useCache = false;
-      if (cachedCity && !force) {
+      
+      if (cachedCityStr && !force) {
         try {
-          const data = JSON.parse(cachedCity);
-          if (isCacheValid(data.timestamp, 60 * 60 * 1000)) {
+          const data = JSON.parse(cachedCityStr);
+          if (isCacheValid(data.timestamp, 60 * 60 * 1000) && isValidCity(data.city)) {
             city = data.city;
             useCache = true;
+            source = "cache";
           }
         } catch {
           localStorage.removeItem("flatnas_auto_city");
@@ -183,76 +191,94 @@ const fetchWeather = async (force = false) => {
       }
 
       if (!useCache) {
-        // 如果使用的是高德地图，直接交给后端处理定位
-        if (
-          (store.appConfig.weatherSource === "amap" && store.appConfig.amapKey) ||
-          store.appConfig.weatherSource === "qweather"
-        ) {
-          city = "auto";
-        } else {
-          // 改用后端接口获取位置，解决 HTTPS 下 Mixed Content 问题
+        // P0: Frontend automatic positioning fallback strategy
+        try {
+          // Resolve IP using backend /api/ip which now returns structured data
           const ipRes = await fetch("/api/ip");
           if (!ipRes.ok) throw new Error("IP API Error");
           const ipData = await ipRes.json();
 
-          if (ipData.success && ipData.location) {
-            // 1. 去除运营商信息
-            let loc = ipData.location.split(" ")[0];
-
-            // 2. 去除省份、自治区、特别行政区前缀
-            loc = loc.replace(/^(?:.*?省|.*?自治区|.*?特别行政区)/, "");
-
-            // 3. 保留第一级城市 (如 "宁波市慈溪市" -> "宁波市")
-            //    只匹配第一个 "市/州/盟/地区"
-            const match = loc.match(/^(.*?[市州盟地区])/);
-            if (match) {
-              loc = match[1];
+          if (ipData.success) {
+            // P0: Use city field directly, no regex
+            const resolved = resolveCityFromIp(ipData);
+            
+            if (resolved) {
+              city = resolved;
+              source = "auto";
+              // Update cache
+              localStorage.setItem(
+                "flatnas_auto_city",
+                JSON.stringify({
+                  city: city,
+                  timestamp: Date.now(),
+                }),
+              );
+            } else {
+              // Fallback logic
+              const lastValid = cachedCityStr ? JSON.parse(cachedCityStr).city : null;
+              city = getFallbackCity(lastValid);
+              source = "fallback";
             }
-
-            city = loc;
-
-            // 保存定位缓存
-            localStorage.setItem(
-              "flatnas_auto_city",
-              JSON.stringify({
-                city: city,
-                timestamp: Date.now(),
-              }),
-            );
+          } else {
+             // Fallback logic if IP API fails
+              const lastValid = cachedCityStr ? JSON.parse(cachedCityStr).city : null;
+              city = getFallbackCity(lastValid);
+              source = "fallback";
           }
+        } catch (e) {
+            console.warn("[Weather] IP resolve failed, fallback", e);
+            const lastValid = cachedCityStr ? JSON.parse(cachedCityStr).city : null;
+            city = getFallbackCity(lastValid);
+            source = "fallback";
         }
       }
     }
 
+    locationSource.value = source;
+    debugCity.value = city;
+
     // 调用后端天气接口
-    let url = `/api/weather?city=${encodeURIComponent(city)}`;
-    const source = store.appConfig.weatherSource || "uapi";
+    const weatherSource = store.appConfig.weatherSource || "uapi";
     const key = store.appConfig.amapKey || "";
     const projectId = store.appConfig.qweatherProjectId || "";
     const keyId = store.appConfig.qweatherKeyId || "";
     const privateKey = store.appConfig.qweatherPrivateKey || "";
 
-    url += `&source=${source}&key=${encodeURIComponent(key)}`;
-    if (source === "qweather") {
-      url += `&projectId=${encodeURIComponent(projectId)}&keyId=${encodeURIComponent(keyId)}&privateKey=${encodeURIComponent(privateKey)}`;
+    const requestWeather = async (targetCity: string) => {
+      let reqUrl = `/api/weather?city=${encodeURIComponent(targetCity)}`;
+      reqUrl += `&source=${weatherSource}&key=${encodeURIComponent(key)}`;
+      if (weatherSource === "qweather") {
+        reqUrl += `&projectId=${encodeURIComponent(projectId)}&keyId=${encodeURIComponent(keyId)}&privateKey=${encodeURIComponent(privateKey)}`;
+      }
+      const res = await fetch(reqUrl);
+      if (!res.ok) throw new Error("Weather API Error");
+      const data = await res.json();
+      if (!data.success || !data.data) throw new Error("Weather data invalid");
+      return data.data;
+    };
+
+    let finalWeatherData;
+    try {
+      finalWeatherData = await requestWeather(city);
+    } catch (err) {
+      // OpenMeteo 在部分城市名解析失败时，回退到稳定默认城市，避免长期显示离线 22°
+      if ((weatherSource === "uapi" || weatherSource === "wttr") && city !== "Shanghai") {
+        finalWeatherData = await requestWeather("Shanghai");
+        city = "Shanghai";
+        locationSource.value = "fallback";
+      } else {
+        throw err;
+      }
     }
 
-    const weatherRes = await fetch(url);
-    if (!weatherRes.ok) throw new Error("Weather API Error");
-    const weatherData = await weatherRes.json();
-
-    if (weatherData.success && weatherData.data) {
-      weather.value = {
-        temp: weatherData.data.temp,
-        city: city,
-        text: weatherData.data.text,
-        humidity: weatherData.data.humidity,
-        today: weatherData.data.today,
-      };
-
-    } else {
-      throw new Error("Weather data invalid");
-    }
+    weather.value = {
+      temp: finalWeatherData.temp,
+      // P0: Use backend returned city name for display
+      city: finalWeatherData.city || city,
+      text: finalWeatherData.text,
+      humidity: finalWeatherData.humidity,
+      today: finalWeatherData.today,
+    };
   } catch (e) {
     console.warn("[Weather] 获取失败，转为离线模式", e);
     weather.value = {
@@ -262,6 +288,7 @@ const fetchWeather = async (force = false) => {
       humidity: "50%",
       today: { min: "18", max: "25" },
     };
+    locationSource.value = "fallback";
   }
 };
 
@@ -408,6 +435,15 @@ onUnmounted(() => {
       :class="isBrightWeather ? 'bg-black/30' : 'bg-black/5'"
     ></div>
 
+    <!-- 开发调试标签 -->
+    <div
+      v-if="showDebugBadge"
+      class="absolute left-2 bottom-2 z-20 px-2 py-1 rounded-md bg-black/45 text-[10px] leading-tight text-white/90 backdrop-blur-sm border border-white/15"
+    >
+      <div>定位: {{ formatLocationSource(locationSource) }}</div>
+      <div>请求城市: {{ debugCity || weather.city }}</div>
+    </div>
+
     <!-- 设置按钮 -->
     <div
       v-if="props.widget && store.isLogged"
@@ -437,6 +473,10 @@ onUnmounted(() => {
 
     <!-- 内容区域 -->
     <div class="relative z-10 h-full flex flex-col justify-between p-2 sm:p-3">
+      <!-- Location Source Hint -->
+      <div class="absolute bottom-1 left-2 text-[10px] text-white/40 z-20 select-none pointer-events-none">
+        {{ formatLocationSource(locationSource) }}
+      </div>
       <!-- 顶部：日期与城市 -->
       <div class="flex items-start justify-between">
         <!-- 日期 -->

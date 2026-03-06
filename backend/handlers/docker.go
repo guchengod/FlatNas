@@ -374,8 +374,13 @@ func ListContainers(c *gin.Context) {
 
 	if statsCollecting.CompareAndSwap(false, true) {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("Recovered from panic in collectStatsIfNeeded: %v", r)
+				}
+				statsCollecting.Store(false)
+			}()
 			collectStatsIfNeeded(dc, containers)
-			statsCollecting.Store(false)
 		}()
 	}
 

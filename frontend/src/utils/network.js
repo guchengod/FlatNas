@@ -20,44 +20,146 @@ const extractHost = (input) => {
   return value;
 };
 
-export const isInternalNetwork = (url, internalDomains = "") => {
-  const raw = typeof url === "string" ? url.trim() : String(url ?? "").trim();
-  if (!raw) return false;
-  const host = extractHost(raw);
-  const target = host ? host.toLowerCase() : raw.toLowerCase();
-  const rawLower = raw.toLowerCase();
-  const hostNoBracket = target.replace(/^\[|\]$/g, "");
+const isIpv4 = (host) => /^(\d{1,3}\.){3}\d{1,3}$/.test(host);
 
-  if (target.includes("localhost") || target.includes("127.0.0.1")) return true;
-  if (/^(192\.168|10\.|172\.(1[6-9]|2\d|3[0-1]))\./.test(target)) return true;
+const isPrivateIpv4 = (host) => {
+  if (!isIpv4(host)) return false;
+  if (/^127\./.test(host)) return true;
+  if (/^10\./.test(host)) return true;
+  if (/^192\.168\./.test(host)) return true;
+  return /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+};
 
-  if (hostNoBracket === "::1") return true;
-  if (/^fe[89ab][0-9a-f]:/i.test(hostNoBracket)) return true;
-  if (/^f[cd][0-9a-f]{2}:/i.test(hostNoBracket)) return true;
+const isOverlayIpv4 = (host) => {
+  if (!isIpv4(host)) return false;
+  // CGNAT range, often used by overlay networks (e.g. tailscale)
+  return /^100\.(6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\./.test(host);
+};
 
-  if (target.endsWith(".local")) return true;
+const normalizeRule = (line) => String(line || "").trim();
 
-  if (internalDomains) {
-    const whitelist = String(internalDomains)
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const item of whitelist) {
-      const v = item.toLowerCase();
-      if (target.includes(v) || rawLower.includes(v)) return true;
-    }
+const parseNetworkRules = (rawRules) => {
+  return String(rawRules || "")
+    .split("\n")
+    .map((line) => normalizeRule(line))
+    .filter((line) => line && !line.startsWith("#"));
+};
+
+const normalizeRuleHostLike = (value) => {
+  let v = String(value || "").trim().toLowerCase();
+  if (!v) return "";
+
+  v = v.replace(/^\*\./, "");
+
+  const parsed = extractHost(v);
+  if (parsed) {
+    v = parsed.toLowerCase();
   }
 
-  return false;
+  v = v.replace(/^\[|\]$/g, "").replace(/^\./, "").replace(/\/$/, "");
+  return v;
+};
+
+const matchDomainSuffix = (host, suffix) => {
+  const normalized = normalizeRuleHostLike(suffix);
+  if (!normalized) return false;
+  return host === normalized || host.endsWith(`.${normalized}`);
+};
+
+const classifyByRules = (host, rules) => {
+  for (const rule of rules) {
+    const v = rule.toLowerCase();
+
+    if (v.startsWith("domain_suffix:")) {
+      const suffix = v.slice("domain_suffix:".length).trim();
+      if (matchDomainSuffix(host, suffix)) {
+        if (suffix.includes("ts.net") || suffix.includes("zerotier")) return "overlay";
+        return "lan";
+      }
+      continue;
+    }
+
+    if (v.startsWith("host:")) {
+      const target = normalizeRuleHostLike(v.slice("host:".length).trim());
+      if (target && host === target) return "lan";
+      continue;
+    }
+
+    if (v.startsWith("ip:")) {
+      const target = v.slice("ip:".length).trim();
+      if (target && host === target) return "lan";
+      continue;
+    }
+
+    // Backward compatibility:
+    // - ipv4 host: plain rule means ip prefix match (e.g. 192.168.)
+    // - domain host: plain rule means domain suffix match (e.g. iepose.cn / *.iepose.cn / http://iepose.cn/)
+    if (isIpv4(host) && host.startsWith(v)) return "lan";
+    if (matchDomainSuffix(host, v)) return "lan";
+  }
+
+  return "wan";
+};
+
+export const NETWORK_PRESET_RULES = {
+  tailscale: ["domain_suffix:.ts.net", "ip:100.64."],
+  zerotier: ["domain_suffix:.zerotier.net"],
+  frp: ["# frp 常见为自定义域名，建议补充 host/domain_suffix 规则"],
+  cloudflareTunnel: ["domain_suffix:.trycloudflare.com"],
+  ngrok: ["domain_suffix:.ngrok.io", "domain_suffix:.ngrok-free.app"],
+};
+
+export const DEFAULT_NETWORK_RULES = [
+  "# overlay networks",
+  ...NETWORK_PRESET_RULES.tailscale,
+  ...NETWORK_PRESET_RULES.zerotier,
+  "# tunnels (kept as WAN by default)",
+  ...NETWORK_PRESET_RULES.cloudflareTunnel,
+  ...NETWORK_PRESET_RULES.ngrok,
+].join("\n");
+
+export const classifyNetworkTarget = (url, networkRules = "", internalDomains = "") => {
+  const raw = typeof url === "string" ? url.trim() : String(url ?? "").trim();
+  if (!raw) return "wan";
+
+  const host = extractHost(raw).toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host) return "wan";
+
+  if (host === "::1" || host.includes("localhost") || /^fe[89ab][0-9a-f]:/i.test(host) || /^f[cd][0-9a-f]{2}:/i.test(host)) {
+    return "lan";
+  }
+
+  if (isPrivateIpv4(host) || host.endsWith(".local")) return "lan";
+  if (isOverlayIpv4(host)) return "overlay";
+
+  const rules = [...parseNetworkRules(networkRules), ...parseNetworkRules(internalDomains)];
+  return classifyByRules(host, rules);
+};
+
+export const isInternalNetwork = (url, internalDomains = "", networkRules = "") => {
+  const type = classifyNetworkTarget(url, networkRules, internalDomains);
+  return type === "lan" || type === "overlay";
+};
+
+export const buildRulesFromPresets = (presets = {}) => {
+  const enabled = Object.entries(presets || {}).filter(([, v]) => !!v);
+  if (enabled.length === 0) return "";
+  const lines = [];
+  for (const [key] of enabled) {
+    if (!NETWORK_PRESET_RULES[key]) continue;
+    lines.push(...NETWORK_PRESET_RULES[key]);
+  }
+  return Array.from(new Set(lines)).join("\n");
 };
 
 export const getNetworkConfig = (appConfig = {}) => {
-  const internalDomains =
-    typeof appConfig.internalDomains === "string" ? appConfig.internalDomains : "";
+  const internalDomains = typeof appConfig.internalDomains === "string" ? appConfig.internalDomains : "";
+  const userRules = typeof appConfig.networkRules === "string" ? appConfig.networkRules : "";
+  const presetRules = buildRulesFromPresets(appConfig.networkPresets || {});
+  const networkRules = [userRules, presetRules].filter(Boolean).join("\n");
   const forceNetworkMode = appConfig.forceNetworkMode || "auto";
   const raw = appConfig.latencyThresholdMs;
-  const base =
-    typeof raw === "number" && Number.isFinite(raw) ? Math.trunc(raw) : 200;
+  const base = typeof raw === "number" && Number.isFinite(raw) ? Math.trunc(raw) : 200;
   const latencyThresholdMs = Math.min(30000, Math.max(20, base));
-  return { internalDomains, forceNetworkMode, latencyThresholdMs };
+  return { internalDomains, networkRules, forceNetworkMode, latencyThresholdMs };
 };

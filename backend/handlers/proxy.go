@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -68,13 +69,9 @@ func ProxyWallpaper(c *gin.Context) {
 		return
 	}
 	h := parsed.Hostname()
-	if isBlockedHost(h) && !isAllowedWallpaperHost(h) {
+	if IsBlockedHost(h) && !isAllowedWallpaperHost(h) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Target host is not allowed"})
 		return
-	}
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
 	}
 
 	req, err := http.NewRequest("GET", parsed.String(), nil)
@@ -86,6 +83,14 @@ func ProxyWallpaper(c *gin.Context) {
 	// Forward necessary headers? Or just simple GET.
 	// User-Agent might be needed for some APIs
 	req.Header.Set("User-Agent", "FlatNas/1.0")
+
+	// Reuse shared client or use a dedicated global one if needed.
+	// For now, let's use the shared proxy client to support environments behind proxy.
+	client, err := getSharedProxyClient()
+	if err != nil {
+		// Fallback to direct client if proxy setup fails, though unlikely
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -139,7 +144,7 @@ func ProxyRequest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported protocol"})
 		return
 	}
-	if isBlockedHost(parsed.Hostname()) {
+	if IsBlockedHost(parsed.Hostname()) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Target host is not allowed"})
 		return
 	}
@@ -233,15 +238,54 @@ func parseProxyURL(value string) (*url.URL, error) {
 	}
 }
 
-func buildProxyClient() (*http.Client, error) {
+var (
+	globalProxyClient *http.Client
+	globalProxyURLStr string
+	proxyClientMu     sync.RWMutex
+)
+
+func getSharedProxyClient() (*http.Client, error) {
 	proxyURL, err := getProxyURL()
 	if err != nil {
 		return nil, err
 	}
-	transport := &http.Transport{}
-	if proxyURL == nil {
-		return &http.Client{Timeout: 20 * time.Second}, nil
+
+	currentURLStr := ""
+	if proxyURL != nil {
+		currentURLStr = proxyURL.String()
 	}
+
+	proxyClientMu.RLock()
+	client := globalProxyClient
+	cachedURLStr := globalProxyURLStr
+	proxyClientMu.RUnlock()
+
+	if client != nil && cachedURLStr == currentURLStr {
+		return client, nil
+	}
+
+	proxyClientMu.Lock()
+	defer proxyClientMu.Unlock()
+
+	// Double check
+	if globalProxyClient != nil && globalProxyURLStr == currentURLStr {
+		return globalProxyClient, nil
+	}
+
+	// Rebuild client
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	if proxyURL == nil {
+		newClient := &http.Client{Timeout: 20 * time.Second, Transport: transport}
+		globalProxyClient = newClient
+		globalProxyURLStr = ""
+		return newClient, nil
+	}
+
 	switch proxyURL.Scheme {
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(proxyURL)
@@ -256,10 +300,18 @@ func buildProxyClient() (*http.Client, error) {
 	default:
 		return nil, fmt.Errorf("unsupported proxy protocol")
 	}
-	return &http.Client{Timeout: 20 * time.Second, Transport: transport}, nil
+
+	newClient := &http.Client{Timeout: 20 * time.Second, Transport: transport}
+	globalProxyClient = newClient
+	globalProxyURLStr = currentURLStr
+	return newClient, nil
 }
 
-func isBlockedHost(host string) bool {
+func buildProxyClient() (*http.Client, error) {
+	return getSharedProxyClient()
+}
+
+func IsBlockedHost(host string) bool {
 	if host == "" {
 		return true
 	}

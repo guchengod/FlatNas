@@ -145,6 +145,8 @@ debian/server/PC/*
 debian/server/APP/*
 !debian/server/APP/.gitkeep
 .fnsync_temp_dir/
+win/
+
 
 # Archives
 *.zip

@@ -105,10 +105,11 @@ type TransferItem struct {
 }
 
 type TransferFile struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
-	Type string `json:"type"`
-	Url  string `json:"url"`
+	Name   string            `json:"name"`
+	Size   int64             `json:"size"`
+	Type   string            `json:"type"`
+	Url    string            `json:"url"`
+	Thumbs map[string]string `json:"thumbs,omitempty"`
 }
 
 type TransferData struct {

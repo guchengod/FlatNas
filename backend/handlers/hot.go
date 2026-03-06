@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	socketio "github.com/googollee/go-socket.io"
@@ -21,16 +20,12 @@ type HotItem struct {
 	Hot   string `json:"hot,omitempty"`
 }
 
-type hotCacheEntry struct {
-	Data    []HotItem
-	Updated time.Time
+var hotTTLs = map[string]time.Duration{
+	"weibo":    3 * time.Minute,
+	"news":     8 * time.Minute,
+	"zhihu":    5 * time.Minute,
+	"bilibili": 4 * time.Minute,
 }
-
-var (
-	hotCache = map[string]hotCacheEntry{}
-	hotMu    sync.RWMutex
-	hotTTL   = 60 * time.Second
-)
 
 func BindHotHandlers(server *socketio.Server) {
 	server.OnEvent("/", "hot:fetch", func(s socketio.Conn, msg interface{}) {
@@ -38,7 +33,6 @@ func BindHotHandlers(server *socketio.Server) {
 		if m, ok := msg.(map[string]interface{}); ok {
 			payload = m
 		} else {
-			// Try to handle if it comes as different type, or just return
 			return
 		}
 
@@ -46,11 +40,27 @@ func BindHotHandlers(server *socketio.Server) {
 		force, _ := payload["force"].(bool)
 		switch t {
 		case "weibo", "news", "zhihu", "bilibili":
-			items, err := getHotData(t, force)
-			if err != nil || len(items) == 0 {
+			cacheKey := buildHotCacheKey(t)
+			var cached []HotItem
+			hasCache, isFresh, _, err := sharedWidgetCache.Get(widgetCacheKindHot, cacheKey, &cached)
+			if err == nil && hasCache && len(cached) > 0 {
+				s.Emit("hot:data", map[string]interface{}{
+					"type": t,
+					"data": cached,
+				})
+			}
+			if hasCache && isFresh && !force {
+				return
+			}
+			if hasCache {
+				go refreshHotAsync(server, t)
+				return
+			}
+			items, fetchErr := refreshHotData(t)
+			if fetchErr != nil || len(items) == 0 {
 				s.Emit("hot:error", map[string]interface{}{
 					"type":  t,
-					"error": fmt.Sprintf("fetch failed: %v", err),
+					"error": fmt.Sprintf("fetch failed: %v", fetchErr),
 				})
 				return
 			}
@@ -67,16 +77,7 @@ func BindHotHandlers(server *socketio.Server) {
 	})
 }
 
-func getHotData(t string, force bool) ([]HotItem, error) {
-	if !force {
-		hotMu.RLock()
-		entry, ok := hotCache[t]
-		hotMu.RUnlock()
-		if ok && time.Since(entry.Updated) < hotTTL && len(entry.Data) > 0 {
-			return entry.Data, nil
-		}
-	}
-
+func refreshHotData(t string) ([]HotItem, error) {
 	var items []HotItem
 	var err error
 	switch t {
@@ -91,18 +92,63 @@ func getHotData(t string, force bool) ([]HotItem, error) {
 	}
 
 	if err == nil && len(items) > 0 {
-		hotMu.Lock()
-		hotCache[t] = hotCacheEntry{Data: items, Updated: time.Now()}
-		hotMu.Unlock()
+		ttl := hotTTLs[t]
+		if ttl <= 0 {
+			ttl = 5 * time.Minute
+		}
+		_ = sharedWidgetCache.Set(widgetCacheKindHot, buildHotCacheKey(t), items, ttl, "ok")
+		return items, nil
 	}
-	return items, err
+	_ = sharedWidgetCache.MarkStatus(widgetCacheKindHot, buildHotCacheKey(t), "error")
+	return nil, err
 }
 
-func newClient() *http.Client {
-	return &http.Client{Timeout: 5 * time.Second}
+func refreshHotAsync(server *socketio.Server, t string) {
+	tag := "hot:" + t
+	if !sharedWidgetCache.StartRefresh(tag) {
+		return
+	}
+	defer sharedWidgetCache.EndRefresh(tag)
+	items, err := refreshHotData(t)
+	if err != nil || len(items) == 0 {
+		return
+	}
+	server.BroadcastToNamespace("/", "hot:data", map[string]interface{}{
+		"type": t,
+		"data": items,
+	})
+}
+
+func buildHotCacheKey(t string) string {
+	return strings.TrimSpace(t)
+}
+
+func WarmHotCache(types []string) {
+	seen := make(map[string]struct{})
+	for _, t := range types {
+		normalized := strings.TrimSpace(t)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := hotTTLs[normalized]; !ok {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		if _, err := refreshHotData(normalized); err != nil {
+			continue
+		}
+	}
 }
 
 func fetchWithHeaders(url string, headers map[string]string) ([]byte, int, error) {
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, 0, err
@@ -110,7 +156,7 @@ func fetchWithHeaders(url string, headers map[string]string) ([]byte, int, error
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := newClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

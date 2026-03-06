@@ -83,8 +83,12 @@ export function generateLayout(widgets: WidgetConfig[], colNum: number): GridLay
 
   // 2. 再放置无位置（或位置失效、或因重叠被挤出）的组件
   unpositioned.forEach((w) => {
-    const width = normalize(w.w ?? w.colSpan ?? 1);
+    let width = normalize(w.w ?? w.colSpan ?? 1);
     const height = normalize(w.h ?? w.rowSpan ?? 1);
+
+    // Safety check: if width is greater than colNum, clamp it to colNum
+    // This prevents infinite loop in the while(true) block below
+    if (width > colNum) width = colNum;
 
     // Find first spot
     let x = 0;

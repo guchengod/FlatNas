@@ -1,8 +1,18 @@
 <script setup lang="ts">
 /* eslint-disable vue/no-mutating-props */
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
+import { storeToRefs } from "pinia";
 import { useMainStore } from "../stores/main";
 import type { WidgetConfig } from "@/types";
+import {
+  isValidCity,
+  resolveCityFromIp,
+  getFallbackCity,
+  formatLocationSource,
+  safeReadCachedCity,
+  safeWriteCachedCity,
+} from "@/utils/weather";
+
 const cityData = ref<Record<string, string[]> | null>(null);
 
 const loadCityData = async () => {
@@ -58,6 +68,8 @@ const props = defineProps<{
 }>();
 
 const store = useMainStore();
+const locationSource = ref<"auto" | "manual" | "cache" | "fallback">("auto");
+const { weatherNetworkStatus: networkStatus } = storeToRefs(store);
 
 // Watch for weather source changes
 watch(
@@ -69,16 +81,39 @@ watch(
 
 const getInitialCity = () => {
   if (props.widget?.data?.city) return props.widget.data.city;
-  try {
-    const cachedCity = localStorage.getItem("flatnas_auto_city");
-    if (cachedCity) {
-      const data = JSON.parse(cachedCity);
-      return data.city;
-    }
-  } catch {
-    // ignore error
-  }
+  const cache = safeReadCachedCity(localStorage.getItem("flatnas_auto_city"));
+  if (cache?.city) return cache.city;
   return "定位中...";
+};
+
+const getCacheTtl = (status: "online" | "degraded" | "offline") => {
+  if (status === "offline") return 24 * 60 * 60 * 1000;
+  if (status === "degraded") return 6 * 60 * 60 * 1000;
+  return 60 * 60 * 1000;
+};
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getNetworkStatus = async (): Promise<"online" | "degraded" | "offline"> => {
+  return store.detectWeatherNetworkStatus();
+};
+
+const fetchIpWithRetry = async (attempts = 2) => {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const ipRes = await fetch("/api/ip", { cache: "no-store" });
+      if (!ipRes.ok) throw new Error("IP API Error");
+      return await ipRes.json();
+    } catch (error) {
+      lastError = error;
+      if (i < attempts - 1) {
+        const backoff = 300 * 2 ** i + Math.floor(Math.random() * 200);
+        await wait(backoff);
+      }
+    }
+  }
+  throw lastError;
 };
 
 const weather = ref<WeatherData>({
@@ -92,6 +127,7 @@ const weather = ref<WeatherData>({
 const isNight = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 let weatherTimer: ReturnType<typeof setInterval> | null = null;
+const WEATHER_SOCKET_TIMEOUT_MS = 8000;
 const rainDrops = ref(
   Array.from({ length: 6 }, (_, i) => ({
     id: i + 1,
@@ -144,6 +180,19 @@ const isBrightWeather = computed(() => {
   return ["snow", "cloudy", "fog"].includes(weatherType.value);
 });
 
+const networkStatusText = computed(() => {
+  switch (networkStatus.value) {
+    case "online":
+      return "网络正常";
+    case "degraded":
+      return "网络波动";
+    case "offline":
+      return "网络离线";
+    default:
+      return "网络未知";
+  }
+});
+
 // 计算背景样式
 const bgClass = computed(() => {
   switch (weatherType.value) {
@@ -193,8 +242,13 @@ const formatDate = (dateStr: string) => {
   }
 };
 
+const isCacheValid = (timestamp: number, duration: number) => {
+  return Date.now() - timestamp < duration;
+};
+
 // 获取天气
 let activeCleanup: (() => void) | undefined;
+let activeRequestId = 0;
 const buildBackendWeatherUrl = (city: string) => {
   const source = store.appConfig.weatherSource || "uapi";
   const key = store.appConfig.amapKey || "";
@@ -208,59 +262,138 @@ const buildBackendWeatherUrl = (city: string) => {
   }
   return url;
 };
-const fetchWeather = async () => {
+const fetchWeather = async (force = false) => {
   activeCleanup?.();
-  const city = props.widget?.data?.city || customCityInput.value || "Shanghai"; // Default fallback
+  const requestId = ++activeRequestId;
+  
+  let city = "Shanghai";
+  let source: "auto" | "manual" | "cache" | "fallback" = "auto";
 
-  // Setup socket listener
+  networkStatus.value = await getNetworkStatus();
+
+  // 优先使用自定义城市
+  if (props.widget?.data?.city) {
+    city = props.widget.data.city;
+    source = "manual";
+  } else {
+    // 尝试从缓存读取自动定位城市（按网络状态动态 TTL）
+    const cached = safeReadCachedCity(localStorage.getItem("flatnas_auto_city"));
+    const ttl = getCacheTtl(networkStatus.value);
+
+    if (cached && !force && isCacheValid(cached.timestamp, ttl) && isValidCity(cached.city, cityData.value)) {
+      city = cached.city;
+      source = "cache";
+    } else {
+      try {
+        const ipData = await fetchIpWithRetry(3);
+
+        if (ipData.success) {
+          const resolved = resolveCityFromIp(ipData, cityData.value);
+
+          if (resolved) {
+            city = resolved;
+            source = "auto";
+            safeWriteCachedCity({
+              city,
+              timestamp: Date.now(),
+              source: "auto",
+              confidence: networkStatus.value === "online" ? "high" : "medium",
+            });
+          } else {
+            city = getFallbackCity(cached?.city ?? null, cityData.value);
+            source = "fallback";
+          }
+        } else {
+          city = getFallbackCity(cached?.city ?? null, cityData.value);
+          source = "fallback";
+          networkStatus.value = "degraded";
+        }
+      } catch (e) {
+        console.warn("[Weather] IP resolve failed, fallback", e);
+        city = getFallbackCity(cached?.city ?? null, cityData.value);
+        source = "fallback";
+        networkStatus.value = navigator.onLine ? "degraded" : "offline";
+      }
+    }
+  }
+  
+  locationSource.value = source;
+
+  const fallbackByRest = async () => {
+    try {
+      const res = await fetch(buildBackendWeatherUrl(city));
+      if (!res.ok) throw new Error("REST weather failed");
+      const j = await res.json();
+      if (!j.success || !j.data) throw new Error("REST payload invalid");
+      weather.value = {
+        ...j.data,
+        city: j.data.city || city,
+      } as WeatherData;
+    } catch {
+      weather.value = {
+        temp: "22",
+        city: city,
+        text: "舒适",
+        humidity: "50%",
+        today: { min: "18", max: "25" },
+        forecast: [],
+      };
+      locationSource.value = "fallback";
+      networkStatus.value = navigator.onLine ? "degraded" : "offline";
+    } finally {
+      cleanup();
+    }
+  };
+
   const onData = (payload: WeatherPayload) => {
+    if (requestId !== activeRequestId) return;
     if (payload.city === city || (payload.city === "Shanghai" && !props.widget?.data?.city)) {
-      weather.value = payload.data;
+      weather.value = {
+        ...payload.data,
+        city: payload.data.city || city,
+      };
+      networkStatus.value = "online";
       cleanup();
     }
   };
 
   const onError = async (payload: WeatherErrorPayload) => {
+    if (requestId !== activeRequestId) return;
     if (payload.city === city) {
-      // 降低日志级别，避免在控制台刷屏错误，因为我们有后续的 REST API 降级策略
-      // console.warn("[Weather] Socket fetch failed, switching to REST API fallback.", payload.error);
-      try {
-        const res = await fetch(buildBackendWeatherUrl(city));
-        if (!res.ok) throw new Error("REST weather failed");
-        const j = await res.json();
-        if (!j.success || !j.data) throw new Error("REST payload invalid");
-        weather.value = j.data as WeatherData;
-      } catch {
-        weather.value = {
-          temp: "22",
-          city: props.widget?.data?.city || "本地",
-          text: "舒适",
-          humidity: "50%",
-          today: { min: "18", max: "25" },
-          forecast: [],
-        };
-      } finally {
-        cleanup();
-      }
+      networkStatus.value = "degraded";
+      await fallbackByRest();
     }
   };
 
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   const cleanup = () => {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
     store.socket.off("weather:data", onData);
     store.socket.off("weather:error", onError);
+    if (activeCleanup === cleanup) {
+      activeCleanup = undefined;
+    }
   };
   activeCleanup = cleanup;
 
   store.socket.on("weather:data", onData);
   store.socket.on("weather:error", onError);
 
-  const source = store.appConfig.weatherSource || "uapi";
+  timeoutTimer = setTimeout(() => {
+    if (requestId !== activeRequestId) return;
+    fallbackByRest();
+  }, WEATHER_SOCKET_TIMEOUT_MS);
+
+  const weatherSource = store.appConfig.weatherSource || "uapi";
   const key = store.appConfig.amapKey || "";
   const projectId = store.appConfig.qweatherProjectId || "";
   const keyId = store.appConfig.qweatherKeyId || "";
   const privateKey = store.appConfig.qweatherPrivateKey || "";
 
-  store.socket.emit("weather:fetch", { city, source, key, projectId, keyId, privateKey });
+  store.socket.emit("weather:fetch", { city, source: weatherSource, key, projectId, keyId, privateKey });
 };
 
 onMounted(() => {
@@ -386,6 +519,10 @@ onUnmounted(() => {
       class="relative z-10 h-full flex flex-col items-center p-4 transition-all"
       :class="showForecast ? 'justify-between' : 'justify-center'"
     >
+      <!-- Location Source Hint -->
+      <div class="absolute bottom-1 left-2 text-[10px] text-white/40 z-20 select-none pointer-events-none">
+        {{ formatLocationSource(locationSource) }} · {{ networkStatusText }}
+      </div>
       <div class="flex flex-col items-center justify-center" :class="{ 'flex-1': showForecast }">
         <div
           class="text-4xl sm:text-5xl font-bold tracking-tighter mb-2"

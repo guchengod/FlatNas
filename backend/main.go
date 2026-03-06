@@ -24,9 +24,11 @@ import (
 func main() {
 	fmt.Println("Backend process started")
 	config.Init()
+	handlers.InitWidgetCache()
 	handlers.InitDocker()
 	handlers.StartIPFetcher()
 	handlers.StartDataWarmup()
+	handlers.StartThumbSync()
 
 	r := gin.New()
 	r.Use(gin.Logger())
@@ -152,6 +154,7 @@ func main() {
 		api.GET("/docker/debug", handlers.GetDockerDebug)
 		api.GET("/config/proxy-status", handlers.GetProxyStatus)
 		api.GET("/widgets/:id", handlers.GetWidget) // Added Widget Data
+		api.GET("/memo/:id", middleware.AuthMiddleware(), handlers.GetMemo)
 
 		// Icon Routes
 		api.GET("/ali-icons", handlers.GetAliIcons)
@@ -165,6 +168,7 @@ func main() {
 		api.GET("/rtt", handlers.RTT)                     // Added RTT for frontend latency check
 		api.POST("/visitor/track", handlers.TrackVisitor) // Public endpoint
 		api.GET("/transfer/file/:filename", middleware.OptionalAuthMiddleware(), handlers.ServeFile)
+		api.GET("/transfer/thumb/:filename/:size", middleware.OptionalAuthMiddleware(), handlers.ServeThumb)
 		api.GET("/music-list", handlers.GetMusicList) // Added Music List
 
 		// Protected Routes
@@ -177,7 +181,8 @@ func main() {
 			authorized.DELETE("/admin/users/:usr", handlers.DeleteUser)
 			authorized.POST("/admin/license", handlers.UploadLicense)
 
-			authorized.POST("/save", handlers.SaveData)                    // Added SaveData
+			authorized.POST("/save", handlers.SaveData) // Added SaveData
+			authorized.PUT("/memo/:id", handlers.SaveMemo)
 			authorized.POST("/system-config", handlers.UpdateSystemConfig) // Added SystemConfig Update
 			authorized.POST("/data/import", handlers.ImportData)           // Added ImportData
 			authorized.POST("/default/save", handlers.SaveDefault)
@@ -205,14 +210,16 @@ func main() {
 			authorized.POST("/mobile_backgrounds/upload", handlers.UploadMobileBackground)
 			authorized.POST("/music/upload", handlers.UploadMusic) // Added Music Upload
 
-			// Transfer
-			api.GET("/transfer/items", handlers.GetTransferItems)
-			authorized.POST("/transfer/text", handlers.SendText)
-			authorized.POST("/transfer/upload/init", handlers.UploadInit)
-			authorized.POST("/transfer/upload/chunk", handlers.UploadChunk)
-			authorized.POST("/transfer/upload/complete", handlers.UploadComplete)
-			authorized.POST("/transfer/download-token", handlers.DownloadToken)
-			authorized.DELETE("/transfer/items/:id", handlers.DeleteItem)
+		// Transfer
+		api.GET("/transfer/items", handlers.GetTransferItems)
+		authorized.POST("/transfer/text", handlers.SendText)
+		authorized.POST("/transfer/upload/init", handlers.UploadInit)
+		authorized.POST("/transfer/upload/chunk", handlers.UploadChunk)
+		authorized.POST("/transfer/upload/complete", handlers.UploadComplete)
+		authorized.POST("/transfer/download-token", handlers.DownloadToken)
+		authorized.DELETE("/transfer/items/:id", handlers.DeleteItem)
+		authorized.POST("/transfer/generate-thumb/:filename/:size", handlers.GenerateThumb)
+		authorized.POST("/transfer/regenerate-thumbs", handlers.RegenerateThumbs)
 
 			// Config Versions
 			authorized.GET("/config-versions", handlers.GetConfigVersions)

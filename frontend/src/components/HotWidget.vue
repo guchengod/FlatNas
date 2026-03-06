@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import type { WidgetConfig } from "@/types";
 import { useMainStore } from "../stores/main";
 import { VueDraggable } from "vue-draggable-plus";
@@ -20,6 +20,16 @@ interface TabConfig {
   activeClass: string;
   barClass: string;
   indexClass: string;
+}
+
+interface HotDataPayload {
+  type?: "weibo" | "news" | "zhihu" | "bilibili";
+  data?: HotItem[];
+}
+
+interface HotErrorPayload {
+  type?: "weibo" | "news" | "zhihu" | "bilibili";
+  error?: string;
 }
 
 const tabs = ref<TabConfig[]>([
@@ -59,17 +69,21 @@ const tabs = ref<TabConfig[]>([
 
 // 缓存不同 Tab 的数据，避免来回切换时重复请求
 const cache = ref<Record<string, { data: HotItem[]; ts: number }>>({});
-const CACHE_TTL = 60 * 1000; // 缓存 1 分钟
+const CACHE_TTL = 15 * 60 * 1000; // 缓存 15 分钟
 
 const activeTab = ref<"weibo" | "news" | "zhihu" | "bilibili">("weibo");
 const list = ref<HotItem[]>([]);
 const loading = ref(false);
+const HOT_FETCH_TIMEOUT_MS = 8000;
+let activeRequestId = 0;
+let activeCleanup: (() => void) | null = null;
 
 // 获取数据 (带缓存优化)
 const fetchHot = async (type: "weibo" | "news" | "zhihu" | "bilibili", force = false) => {
+  activeCleanup?.();
   activeTab.value = type;
+  const requestId = ++activeRequestId;
 
-  // 检查缓存
   const now = Date.now();
   if (!force && cache.value[type] && now - cache.value[type].ts < CACHE_TTL) {
     list.value = cache.value[type].data;
@@ -77,20 +91,25 @@ const fetchHot = async (type: "weibo" | "news" | "zhihu" | "bilibili", force = f
   }
 
   loading.value = true;
-  list.value = [];
+  if (cache.value[type]) {
+    // 即使过期也先显示旧数据，避免空白
+    list.value = cache.value[type].data;
+  } else {
+    list.value = [];
+  }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onData = (payload: any) => {
+  const onData = (payload: HotDataPayload) => {
+    if (requestId !== activeRequestId) return;
     if (payload.type === type) {
-      list.value = payload.data;
+      list.value = Array.isArray(payload.data) ? payload.data : [];
       cache.value[type] = { data: list.value, ts: Date.now() };
       loading.value = false;
       cleanup();
     }
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onError = (payload: any) => {
+  const onError = (payload: HotErrorPayload) => {
+    if (requestId !== activeRequestId) return;
     if (payload.type === type) {
       console.error(`加载 ${type} 失败`, payload.error);
       list.value = [{ title: "加载失败，请重试", url: "#", hot: "" }];
@@ -99,19 +118,46 @@ const fetchHot = async (type: "weibo" | "news" | "zhihu" | "bilibili", force = f
     }
   };
 
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   const cleanup = () => {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
     store.socket.off("hot:data", onData);
     store.socket.off("hot:error", onError);
+    if (activeCleanup === cleanup) {
+      activeCleanup = null;
+    }
   };
+  activeCleanup = cleanup;
 
   store.socket.on("hot:data", onData);
   store.socket.on("hot:error", onError);
 
+  timeoutTimer = setTimeout(() => {
+    if (requestId !== activeRequestId) return;
+    list.value = [{ title: "请求超时，请重试", url: "#", hot: "" }];
+    loading.value = false;
+    cleanup();
+  }, HOT_FETCH_TIMEOUT_MS);
+
   store.socket.emit("hot:fetch", { type, force });
+};
+
+// 监听连接事件，重新获取数据
+const onConnect = () => {
+  fetchHot(activeTab.value);
 };
 
 onMounted(() => {
   fetchHot("weibo");
+  store.socket.on("connect", onConnect);
+});
+
+onUnmounted(() => {
+  activeCleanup?.();
+  store.socket.off("connect", onConnect);
 });
 
 const handleScrollIsolation = (e: WheelEvent) => {

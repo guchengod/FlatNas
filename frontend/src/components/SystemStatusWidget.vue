@@ -42,7 +42,7 @@ const isWide = computed(() => isMedium.value || isLarge.value);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 const errorCount = ref(0);
-const pollInterval = ref(10000);
+const pollInterval = ref(60000);
 
 const startPolling = () => {
   if (pollTimer) clearInterval(pollTimer);

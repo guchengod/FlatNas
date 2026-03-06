@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -42,7 +43,11 @@ func GetAliIcons(c *gin.Context) {
 	aliIconsMutex.RUnlock()
 
 	// Fetch from upstream
-	resp, err := http.Get(aliIconsURL)
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	resp, err := client.Get(aliIconsURL)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch icons from upstream", "details": err.Error()})
 		return
@@ -83,7 +88,22 @@ func GetIconBase64(c *gin.Context) {
 		return
 	}
 
-	resp, err := http.Get(urlStr)
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL"})
+		return
+	}
+
+	if IsBlockedHost(parsed.Hostname()) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Target host is not allowed"})
+		return
+	}
+
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	resp, err := client.Get(urlStr)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch icon", "details": err.Error()})
 		return

@@ -363,6 +363,8 @@ const activePaginationGroupId = computed<string>({
 const isWebPaginationMode = computed(() => store.appConfig.webGroupPagination && !isMobile.value);
 const mainContainerRef = ref<HTMLElement | null>(null);
 
+const isGridAlive = ref(true);
+
 watch(
   [() => store.groups, isWebPaginationMode],
   ([groups, mode]) => {
@@ -408,6 +410,16 @@ const effectiveIsLan = computed(() => {
   }
   return isLanMode.value;
 });
+
+watch(
+  [isLanMode, latency, effectiveIsLan],
+  ([lan, nextLatency, effective]) => {
+    store.isLanMode = lan;
+    store.networkLatency = nextLatency;
+    store.effectiveIsLan = effective;
+  },
+  { immediate: true },
+);
 
 const sidebarCollapsed = ref(true);
 const isSidebarEnabled = computed(() => {
@@ -650,6 +662,8 @@ const widgetColNum = computed(() => {
   if (deviceKey.value === "tablet") return isTabletPortrait.value ? 2 : 4;
   return desktopWidgetAreaCols.value;
 });
+const lastDeviceKey = ref(deviceKey.value);
+const lastWidgetColNum = ref(widgetColNum.value);
 const rowHeight = computed(() =>
   deviceKey.value === "mobile" ? 120 : deviceKey.value === "tablet" ? 130 : 140,
 );
@@ -736,15 +750,22 @@ const compactVertical = (layout: GridLayoutItem[]) => {
 };
 
 watch(
-  () => [store.widgets, widgetColNum.value, deviceKey.value],
+  () => [store.mergedWidgets, widgetColNum.value, deviceKey.value],
   () => {
+    const nextDeviceKey = deviceKey.value;
+    const nextColNum = widgetColNum.value;
+    const shouldRemount =
+      nextDeviceKey !== lastDeviceKey.value || nextColNum !== lastWidgetColNum.value;
+    lastDeviceKey.value = nextDeviceKey;
+    lastWidgetColNum.value = nextColNum;
+
     if (isInternalUpdate) return;
 
     // 防止编辑时因服务端推送导致的布局回弹 (Rebound)
     // 处于编辑模式(活跃)时，忽略外部更新，以本地拖拽状态为准
     if (isEditMode.value) return;
 
-    const visibleWidgets = store.widgets
+    const visibleWidgets = store.mergedWidgets
       .filter(
         (w) =>
           checkVisible(w) &&
@@ -779,8 +800,11 @@ watch(
         newW.y = undefined;
       }
 
+      // Safety: Ensure widget width does not exceed total columns
+      // This is critical when switching from wider to narrower layouts (e.g. desktop -> tablet)
+      if ((newW.w || 1) > colNum) newW.w = colNum;
+
       if (deviceKey.value === "mobile") {
-        if ((newW.w || 1) > colNum) newW.w = colNum;
         if (
           [
             "clockweather",
@@ -796,15 +820,21 @@ watch(
           newW.w = colNum;
         }
       }
-      if (deviceKey.value === "tablet" && isTabletPortrait.value) {
-        if ((newW.w || 1) > colNum) newW.w = colNum;
-      }
       return newW;
     });
 
     // 标记为程序化布局更新，避免触发保存循环
     skipNextLayoutSave = true;
     layoutData.value = compactVertical(generateLayout(widgetsToLayout, colNum));
+    
+    // 如果 deviceKey 发生变化，强制重新挂载 GridLayout 组件
+    // 这可以解决从窄屏切换回宽屏时布局错乱的问题，同时避免 :key 导致的死循环
+    if (shouldRemount && !isInternalUpdate && !isEditMode.value) {
+      isGridAlive.value = false;
+      nextTick(() => {
+        isGridAlive.value = true;
+      });
+    }
   },
   { deep: true, immediate: true },
 );
@@ -1175,6 +1205,7 @@ onMounted(() => {
   isLanMode.value = isInternalNetwork(
     window.location.hostname,
     networkConfig.value.internalDomains,
+    networkConfig.value.networkRules,
   );
   setTimeout(() => checkLatency(), 2000);
   fetchIp(true);
@@ -2376,13 +2407,13 @@ const fetchIp = async (force = false) => {
         const { timestamp, data } = JSON.parse(cached);
         if (Date.now() - timestamp < CACHE_DURATION) {
           ipInfo.value = data;
-          const internalDomains = networkConfig.value.internalDomains;
-          const hostnameIsLan = isInternalNetwork(window.location.hostname, internalDomains);
+          const { internalDomains, networkRules } = networkConfig.value;
+          const hostnameIsLan = isInternalNetwork(window.location.hostname, internalDomains, networkRules);
           const canTrustClientIp = data?.clientIpSource === "header";
           const clientIsLan =
             canTrustClientIp &&
             !!data?.clientIp &&
-            isInternalNetwork(String(data.clientIp), internalDomains);
+            isInternalNetwork(String(data.clientIp), internalDomains, networkRules);
           isLanMode.value = hostnameIsLan || clientIsLan;
           store.ipFetchStatus = "success";
           store.isLanModeInited = true;
@@ -2436,13 +2467,13 @@ const fetchIp = async (force = false) => {
       ipInfo.value.clientIp = data.clientIp || "";
       ipInfo.value.clientIpSource = data.clientIpSource || "";
 
-      const internalDomains = networkConfig.value.internalDomains;
-      const hostnameIsLan = isInternalNetwork(window.location.hostname, internalDomains);
+      const { internalDomains, networkRules } = networkConfig.value;
+      const hostnameIsLan = isInternalNetwork(window.location.hostname, internalDomains, networkRules);
       const canTrustClientIp = ipInfo.value.clientIpSource === "header";
       const clientIsLan =
         canTrustClientIp &&
         !!ipInfo.value.clientIp &&
-        isInternalNetwork(String(ipInfo.value.clientIp), internalDomains);
+        isInternalNetwork(String(ipInfo.value.clientIp), internalDomains, networkRules);
       isLanMode.value = hostnameIsLan || clientIsLan;
       store.ipFetchStatus = "success";
     } else {
@@ -2939,6 +2970,7 @@ onUnmounted(() => {
           :style="{ marginBottom: (store.appConfig.groupGap ?? 30) + 'px' }"
         >
           <GridLayout
+            v-if="isGridAlive"
             v-model:layout="scaledLayoutData"
             :col-num="widgetColNum * gridScale"
             :row-height="scaledRowHeight"

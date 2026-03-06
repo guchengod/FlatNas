@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	socketio "github.com/googollee/go-socket.io"
@@ -29,17 +28,7 @@ type UnifiedRssItem struct {
 	ContentSnippet string `json:"contentSnippet"`
 }
 
-// Cache structures
-type CachedRssItem struct {
-	Items     []UnifiedRssItem
-	ExpiresAt time.Time
-}
-
-var (
-	rssCache      = make(map[string]CachedRssItem)
-	rssCacheMutex sync.RWMutex
-	RssCacheTTL   = 6 * time.Hour
-)
+var rssCacheTTL = 15 * time.Minute
 
 // RSS 2.0 Structures
 type Rss2Feed struct {
@@ -105,35 +94,35 @@ func BindRssHandlers(server *socketio.Server) {
 			return
 		}
 
-		// Check cache
-		rssCacheMutex.RLock()
-		cached, exists := rssCache[urlStr]
-		rssCacheMutex.RUnlock()
-
-		if exists && time.Now().Before(cached.ExpiresAt) {
+		var cachedItems []UnifiedRssItem
+		hasCache, isFresh, _, err := sharedWidgetCache.Get(widgetCacheKindRSS, urlStr, &cachedItems)
+		if err == nil && hasCache && len(cachedItems) > 0 {
 			s.Emit("rss:data", map[string]interface{}{
 				"url": urlStr,
 				"data": map[string]interface{}{
-					"items": cached.Items,
+					"items": cachedItems,
 				},
 			})
+		}
+		if hasCache && isFresh {
+			return
+		}
+		if hasCache {
+			go refreshRssAsync(server, urlStr)
 			return
 		}
 
 		items, err := fetchRssFeed(urlStr)
 		if err != nil {
 			log.Printf("RSS fetch failed: url=%s error=%v", urlStr, err)
+			_ = sharedWidgetCache.MarkStatus(widgetCacheKindRSS, urlStr, "error")
 			s.Emit("rss:error", map[string]interface{}{"url": urlStr, "error": err.Error()})
 			return
 		}
-
-		// Update cache
-		rssCacheMutex.Lock()
-		rssCache[urlStr] = CachedRssItem{
-			Items:     items,
-			ExpiresAt: time.Now().Add(RssCacheTTL),
+		if err := sharedWidgetCache.Set(widgetCacheKindRSS, urlStr, items, rssCacheTTL, "ok"); err != nil {
+			s.Emit("rss:error", map[string]interface{}{"url": urlStr, "error": err.Error()})
+			return
 		}
-		rssCacheMutex.Unlock()
 
 		s.Emit("rss:data", map[string]interface{}{
 			"url": urlStr,
@@ -145,32 +134,50 @@ func BindRssHandlers(server *socketio.Server) {
 }
 
 func WarmRssCache(urls []string) {
+	seen := make(map[string]struct{})
 	for _, urlStr := range urls {
 		urlStr = strings.TrimSpace(urlStr)
 		if urlStr == "" {
 			continue
 		}
-		rssCacheMutex.RLock()
-		cached, exists := rssCache[urlStr]
-		rssCacheMutex.RUnlock()
-		if exists && time.Now().Before(cached.ExpiresAt) {
+		if _, exists := seen[urlStr]; exists {
 			continue
 		}
+		seen[urlStr] = struct{}{}
 		items, err := fetchRssFeed(urlStr)
 		if err != nil {
+			_ = sharedWidgetCache.MarkStatus(widgetCacheKindRSS, urlStr, "error")
 			log.Printf("RSS warmup failed: url=%s error=%v", urlStr, err)
 			continue
 		}
 		if len(items) == 0 {
 			continue
 		}
-		rssCacheMutex.Lock()
-		rssCache[urlStr] = CachedRssItem{
-			Items:     items,
-			ExpiresAt: time.Now().Add(RssCacheTTL),
-		}
-		rssCacheMutex.Unlock()
+		_ = sharedWidgetCache.Set(widgetCacheKindRSS, urlStr, items, rssCacheTTL, "ok")
 	}
+}
+
+func refreshRssAsync(server *socketio.Server, urlStr string) {
+	tag := "rss:" + urlStr
+	if !sharedWidgetCache.StartRefresh(tag) {
+		return
+	}
+	defer sharedWidgetCache.EndRefresh(tag)
+	items, err := fetchRssFeed(urlStr)
+	if err != nil {
+		_ = sharedWidgetCache.MarkStatus(widgetCacheKindRSS, urlStr, "error")
+		return
+	}
+	if len(items) == 0 {
+		return
+	}
+	_ = sharedWidgetCache.Set(widgetCacheKindRSS, urlStr, items, rssCacheTTL, "ok")
+	server.BroadcastToNamespace("/", "rss:data", map[string]interface{}{
+		"url": urlStr,
+		"data": map[string]interface{}{
+			"items": items,
+		},
+	})
 }
 
 func fetchRssFeed(feedUrl string) ([]UnifiedRssItem, error) {

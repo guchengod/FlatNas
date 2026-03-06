@@ -245,6 +245,9 @@ func SaveCustomScripts(c *gin.Context) {
 type IPCache struct {
 	IP       string
 	Location string
+	Country  string
+	Region   string
+	City     string
 	Updated  time.Time
 	Mutex    sync.RWMutex
 }
@@ -300,6 +303,15 @@ func fetchIPAndCache() bool {
 		globalIPCache.IP = query
 	}
 	globalIPCache.Location = getLocationString(result)
+	if country, ok := result["country"].(string); ok {
+		globalIPCache.Country = country
+	}
+	if region, ok := result["regionName"].(string); ok {
+		globalIPCache.Region = region
+	}
+	if city, ok := result["city"].(string); ok {
+		globalIPCache.City = city
+	}
 	globalIPCache.Updated = time.Now()
 	return true
 }
@@ -315,6 +327,9 @@ func GetIP(c *gin.Context) {
 	globalIPCache.Mutex.RLock()
 	ip := globalIPCache.IP
 	location := globalIPCache.Location
+	country := globalIPCache.Country
+	region := globalIPCache.Region
+	city := globalIPCache.City
 	globalIPCache.Mutex.RUnlock()
 
 	if ip != "" {
@@ -322,6 +337,10 @@ func GetIP(c *gin.Context) {
 			"success":        true,
 			"ip":             ip,
 			"location":       location,
+			"country":        country,
+			"region":         region,
+			"city":           city,
+			"queryIp":        ip,
 			"clientIp":       c.ClientIP(),
 			"clientIpSource": "header",
 			"cached":         true,
@@ -387,6 +406,15 @@ func GetIP(c *gin.Context) {
 			globalIPCache.IP = query
 		}
 		globalIPCache.Location = getLocationString(result)
+		if country, ok := result["country"].(string); ok {
+			globalIPCache.Country = country
+		}
+		if region, ok := result["regionName"].(string); ok {
+			globalIPCache.Region = region
+		}
+		if city, ok := result["city"].(string); ok {
+			globalIPCache.City = city
+		}
 		globalIPCache.Updated = time.Now()
 		globalIPCache.Mutex.Unlock()
 	}
@@ -396,6 +424,10 @@ func GetIP(c *gin.Context) {
 		"success":        true,
 		"ip":             result["query"],
 		"location":       getLocationString(result),
+		"country":        result["country"],
+		"region":         result["regionName"],
+		"city":           result["city"],
+		"queryIp":        result["query"],
 		"clientIp":       c.ClientIP(),
 		"clientIpSource": "header",
 	})

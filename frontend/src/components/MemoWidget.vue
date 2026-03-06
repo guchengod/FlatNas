@@ -11,18 +11,38 @@ const props = defineProps<{ widget: WidgetConfig }>();
 const store = useMainStore();
 const { isMobile } = useDevice(toRef(store.appConfig, "deviceMode"));
 
+// --- Configuration ---
+const CONFIG = {
+  INPUT_COOLDOWN: 2000,
+  ACTIVE_INPUT_WINDOW: 3000,
+  POLL_ACTIVE_INTERVAL: 5000,
+  POLL_SILENT_INTERVAL: 10000,
+  POLL_IDLE_INTERVAL: 15000, // Background/Hidden
+  POLL_WEAK_NETWORK: 20000,
+  BROADCAST_THROTTLE: 200,
+  BROADCAST_RETRY_LIMIT: 3,
+};
+
+// --- Sync State ---
+const isNetworkOnline = ref(navigator.onLine);
+const userActivityState = ref<'active' | 'silent'>('active');
+const syncState = ref<'idle' | 'inputting' | 'cooldown' | 'broadcasting' | 'offline' | 'conflict'>('idle');
+
 // State
 const mode = ref<"simple" | "rich">("simple");
 const localData = ref(""); // Stores HTML for rich mode or text for simple mode
 const editorRef = ref<InstanceType<typeof MemoEditor> | null>(null);
 const isEditing = ref(false);
-const localUpdatedAt = ref(0);
+const isSaving = ref(false); // Fix Risk 3: Track saving status
+const pendingSave = ref(false); // Track if a save was requested while saving
+const conflictState = ref<{ hasConflict: boolean; remoteData: any }>({ hasConflict: false, remoteData: null });
+const serverTs = ref(0);
 const lastInputAt = ref(0);
 const isBroadcasting = ref(false);
 const isPageVisible = ref(document.visibilityState === "visible");
 
 // Persistence
-const { saveToIndexedDB, loadFromIndexedDB, status, progress, saveVersionSnapshot, loadVersions, deleteVersion } =
+const { saveToIndexedDB, loadFromIndexedDB, status, saveVersionSnapshot, loadVersions, deleteVersion } =
   useMemoPersistence(
   props.widget.id,
   localData,
@@ -37,6 +57,10 @@ const historyVersions = ref<MemoVersion[]>([]);
 const selectedVersionId = ref("new");
 const activeVersionIndex = ref(0);
 const versionWrapperRef = ref<HTMLDivElement | null>(null);
+const autoSaveDelay = computed(() => {
+  if (!store.isLanModeInited) return 800;
+  return store.effectiveIsLan ? 800 : 8000;
+});
 
 type VersionOption = {
   id: string;
@@ -87,27 +111,17 @@ const triggerSave = async () => {
     showToast.value = true;
     setTimeout(() => (showToast.value = false), 3000);
   }
-  saveToServer(true);
+  await saveToServer(true);
 };
 
 const toggleMode = () => {
   mode.value = mode.value === "simple" ? "rich" : "simple";
-  const payload = buildPayload();
-  localUpdatedAt.value = payload.updatedAt;
   saveToServer(true);
-  if (store.isLogged) {
-    store.socket?.emit("memo:update", {
-      token: store.token || localStorage.getItem("flat-nas-token"),
-      widgetId: props.widget.id,
-      content: payload,
-    });
-  }
 };
 
-const parsePayload = (payload: WidgetConfig["data"]) => {
+const parsePayload = (payload: unknown) => {
   let content = "";
-  let payloadMode: "simple" | "rich" = mode.value;
-  let updatedAt = 0;
+  let nextServerTs = 0;
 
   if (typeof payload === "string") {
     content = payload;
@@ -120,98 +134,324 @@ const parsePayload = (payload: WidgetConfig["data"]) => {
     } else if (typeof data.simple === "string") {
       content = data.simple;
     }
-    if (data.mode === "simple" || data.mode === "rich") {
-      payloadMode = data.mode;
-    }
-    if (typeof data.updatedAt === "number") {
-      updatedAt = data.updatedAt;
+    if (typeof data.server_ts === "number") {
+      nextServerTs = data.server_ts;
+    } else if (typeof data.updatedAt === "number") {
+      nextServerTs = data.updatedAt;
     }
   }
 
-  return { content, mode: payloadMode, updatedAt };
+  return { content, serverTs: nextServerTs };
 };
 
 const buildPayload = () => ({
   content: localData.value,
-  mode: mode.value,
-  updatedAt: Date.now(),
+  server_ts: serverTs.value,
 });
 
 let serverSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let broadcastTimer: ReturnType<typeof setTimeout> | null = null;
-const ACTIVE_INPUT_WINDOW = 800;
-const POLL_ACTIVE_INTERVAL = 800;
-const POLL_IDLE_INTERVAL = 5000;
-const saveToServer = (immediate = false) => {
+const saveToServer = async (immediate = false, keepalive = false) => {
   if (!store.isLogged) return;
-  const doSave = () => {
+  // If conflict is active, block further auto-saves until resolved
+  if (conflictState.value.hasConflict && !immediate) return;
+
+  const id = props.widget.id;
+  if (!id) return;
+  const doSave = async () => {
+    if (isSaving.value) {
+      pendingSave.value = true;
+      return;
+    }
+    
+    isSaving.value = true;
+    pendingSave.value = false;
+
     const payload = buildPayload();
-    localUpdatedAt.value = payload.updatedAt;
-    store.saveWidget(props.widget.id, payload);
+    fetch(`/api/memo/${id}`, {
+      method: "PUT",
+      headers: {
+        ...store.getHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      keepalive,
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (res.status === 409) {
+          if (data?.data) {
+            // Fix Risk 1: 409 Conflict Handling
+            // Instead of silent overwrite, enter conflict state
+            conflictState.value = {
+              hasConflict: true,
+              remoteData: data.data,
+            };
+            syncState.value = "conflict";
+            toastMessage.value = "检测到版本冲突，请选择解决方案";
+            showToast.value = true;
+            // Do NOT auto-hide toast in conflict state
+          }
+          return;
+        }
+        if (!res.ok) return;
+        if (data?.data) {
+          applyRemotePayload(data.data);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        isSaving.value = false;
+        if (pendingSave.value) {
+          saveToServer(true);
+        }
+      });
   };
 
   if (immediate) {
-    doSave();
+    await doSave();
     return;
   }
 
   if (serverSaveTimer) clearTimeout(serverSaveTimer);
   serverSaveTimer = setTimeout(() => {
     serverSaveTimer = null;
-    doSave();
+    void doSave();
   }, 800);
 };
 
-const applyRemotePayload = (payload: WidgetConfig["data"]) => {
+const resolveConflict = (action: 'local' | 'remote') => {
+  if (!conflictState.value.hasConflict || !conflictState.value.remoteData) return;
+  const remote = conflictState.value.remoteData;
+  if (action === 'local') {
+    // Keep local content, but update serverTs to allow overwrite
+    serverTs.value = remote.server_ts;
+    // Trigger save immediately
+    saveToServer(true);
+  } else {
+    // Use remote content
+    applyRemotePayload(remote, true);
+  }
+  // Clear conflict state
+  conflictState.value = { hasConflict: false, remoteData: null };
+  syncState.value = 'idle';
+  showToast.value = false;
+};
+
+const applyRemotePayload = (payload: WidgetConfig["data"], force = false) => {
   const parsed = parsePayload(payload);
-  if (!parsed.content) return;
-  if (isEditing.value) return;
-  if (parsed.updatedAt && parsed.updatedAt <= localUpdatedAt.value) return;
-  if (parsed.content !== localData.value) {
+  if (!force && parsed.serverTs && parsed.serverTs <= serverTs.value) return;
+  if (conflictState.value.hasConflict && !force) return; // Block remote updates during conflict
+  
+  if (isEditing.value) {
+    if (parsed.serverTs) {
+      serverTs.value = parsed.serverTs;
+    }
+    return;
+  }
+  if (parsed.content !== localData.value || parsed.serverTs !== serverTs.value) {
     localData.value = parsed.content;
-    mode.value = parsed.mode;
-    localUpdatedAt.value = parsed.updatedAt || Date.now();
+    serverTs.value = parsed.serverTs;
+  }
+};
+
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let idleCheckTimer: ReturnType<typeof setInterval> | null = null;
+let currentPollInterval = CONFIG.POLL_ACTIVE_INTERVAL;
+let pollRetryCount = 0;
+
+const pollRemote = async () => {
+  // Fix Risk 3: Check isSaving to avoid race condition
+  if (!store.isLogged || !store.isConnected || isEditing.value || isSaving.value || syncState.value !== "idle") return;
+  const id = props.widget.id;
+  if (!id) return;
+  
+  // Fix Risk 2: Skip polling if WebSocket is connected and healthy
+  if (store.socket?.connected) {
+    scheduleNextPoll();
+    return;
+  }
+
+  if (import.meta.env.MODE === "test") return;
+  try {
+    const res = await fetch(`/api/memo/${id}`, { headers: store.getHeaders() });
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    if (data?.success && data?.data) {
+      applyRemotePayload(data.data);
+    }
+    pollRetryCount = 0; // Success reset
+  } catch {
+    pollRetryCount++;
+  } finally {
+    scheduleNextPoll();
+  }
+};
+
+const scheduleNextPoll = () => {
+  if (pollTimer) clearTimeout(pollTimer);
+  
+  if (syncState.value !== "idle") return;
+
+  let interval = CONFIG.POLL_IDLE_INTERVAL;
+  if (isPageVisible.value) {
+     interval = userActivityState.value === "active" 
+        ? CONFIG.POLL_ACTIVE_INTERVAL 
+        : CONFIG.POLL_SILENT_INTERVAL;
+  }
+  
+  // Backoff strategy
+  if (pollRetryCount > 0) {
+    const backoff = Math.min(5000 * Math.pow(2, pollRetryCount), 30000);
+    interval = Math.max(interval, backoff);
+  }
+  
+  pollTimer = setTimeout(pollRemote, interval);
+  currentPollInterval = interval;
+};
+
+let lastBroadcastTime = 0;
+let broadcastRetryCount = 0;
+
+const performBroadcast = () => {
+  if (!store.isLogged || !store.socket?.connected) return;
+  const payload = buildPayload();
+  
+  // Fire and forget with simple retry logic (socket.io has built-in buffers but we add app-level retry)
+  try {
+    store.socket.emit("memo:update", {
+      token: store.token || localStorage.getItem("flat-nas-token"),
+      widgetId: props.widget.id,
+      content: payload,
+    }); 
+    broadcastRetryCount = 0;
+  } catch {
+    // Retry logic
+    if (broadcastRetryCount < CONFIG.BROADCAST_RETRY_LIMIT) {
+      broadcastRetryCount++;
+      setTimeout(performBroadcast, 1000 * Math.pow(2, broadcastRetryCount));
+    }
   }
 };
 
 const scheduleBroadcast = () => {
   if (!isBroadcasting.value || !store.isLogged) return;
-  if (broadcastTimer) clearTimeout(broadcastTimer);
-  broadcastTimer = setTimeout(() => {
-    if (!isBroadcasting.value || !store.isLogged) return;
-    const payload = buildPayload();
-    store.socket?.emit("memo:update", {
-      token: store.token || localStorage.getItem("flat-nas-token"),
-      widgetId: props.widget.id,
-      content: payload,
-    });
-  }, 300);
+  
+  const now = Date.now();
+  const remaining = CONFIG.BROADCAST_THROTTLE - (now - lastBroadcastTime);
+  
+  if (remaining <= 0) {
+    if (broadcastTimer) {
+      clearTimeout(broadcastTimer);
+      broadcastTimer = null;
+    }
+    performBroadcast();
+    lastBroadcastTime = now;
+  } else if (!broadcastTimer) {
+    broadcastTimer = setTimeout(() => {
+      performBroadcast();
+      lastBroadcastTime = Date.now();
+      broadcastTimer = null;
+    }, remaining);
+  }
 };
 
 const updateSyncMode = () => {
-  const active =
-    isEditing.value && Date.now() - lastInputAt.value <= ACTIVE_INPUT_WINDOW;
-  const targetInterval = isPageVisible.value ? POLL_ACTIVE_INTERVAL : POLL_IDLE_INTERVAL;
-  if (active) {
+  // If in conflict, stay in conflict state until resolved
+  if (conflictState.value.hasConflict) {
+    syncState.value = "conflict";
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    return;
+  }
+
+  if (!isNetworkOnline.value) {
+    syncState.value = "offline";
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    return;
+  }
+
+  const now = Date.now();
+  const timeSinceInput = now - lastInputAt.value;
+  if (isEditing.value) {
+    const isInputActive = timeSinceInput <= CONFIG.ACTIVE_INPUT_WINDOW;
+    syncState.value = isInputActive ? "inputting" : "cooldown";
+    isBroadcasting.value = isInputActive;
     if (pollTimer) {
-      clearInterval(pollTimer);
+      clearTimeout(pollTimer);
       pollTimer = null;
     }
-    isBroadcasting.value = true;
-  } else {
+    return;
+  }
+
+  const isInCooldown = timeSinceInput <= (CONFIG.ACTIVE_INPUT_WINDOW + CONFIG.INPUT_COOLDOWN);
+  if (isInCooldown) {
+    syncState.value = "cooldown";
     isBroadcasting.value = false;
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  } else {
+    syncState.value = "idle";
+    isBroadcasting.value = false;
+    
     if (!pollTimer) {
-      pollTimer = setInterval(pollRemote, targetInterval);
-    } else if (pollTimer && targetInterval !== currentPollInterval) {
-      clearInterval(pollTimer);
-      pollTimer = setInterval(pollRemote, targetInterval);
+      scheduleNextPoll();
+    } else {
+      // If we switched from silent to active, we restart timer to react faster
+      if (userActivityState.value === "active" && currentPollInterval > CONFIG.POLL_ACTIVE_INTERVAL) {
+         clearTimeout(pollTimer);
+         pollTimer = setTimeout(pollRemote, 0); 
+      }
     }
   }
-  currentPollInterval = targetInterval;
+};
+
+const handleVisibilityChange = () => {
+  isPageVisible.value = document.visibilityState === "visible";
+  updateSyncMode();
+};
+
+// --- Monitoring ---
+let activityTimer: ReturnType<typeof setTimeout> | null = null;
+const handleUserActivity = () => {
+  if (userActivityState.value === "silent") {
+    userActivityState.value = "active";
+    updateSyncMode();
+  }
+  if (activityTimer) clearTimeout(activityTimer);
+  activityTimer = setTimeout(() => {
+    userActivityState.value = "silent";
+    updateSyncMode();
+  }, 30000); // 30s silent -> active
+};
+
+const handleOnline = () => {
+  isNetworkOnline.value = true;
+  updateSyncMode();
+  // Sync pending changes if any (implement later)
+};
+
+const handleOffline = () => {
+  isNetworkOnline.value = false;
+  updateSyncMode();
+};
+
+const handleFocus = () => {
+  isEditing.value = true;
+  lastInputAt.value = Date.now();
+  updateSyncMode();
+};
+
+const handleBlur = () => {
+  isEditing.value = false;
+  updateSyncMode();
+  saveToServer(true);
 };
 
 const handleInputActivity = () => {
   lastInputAt.value = Date.now();
+  handleUserActivity(); // Also trigger activity
   updateSyncMode();
   scheduleBroadcast();
 };
@@ -269,7 +509,6 @@ const toggleVersionMenu = () => {
 
 const createNewMemo = async () => {
   localData.value = "";
-  localUpdatedAt.value = Date.now();
   await saveToIndexedDB();
   saveToServer(true);
 };
@@ -277,7 +516,6 @@ const createNewMemo = async () => {
 const applyVersion = async (version: MemoVersion) => {
   localData.value = version.content;
   mode.value = version.mode;
-  localUpdatedAt.value = Date.now();
   await saveToIndexedDB();
   saveToServer(true);
 };
@@ -346,18 +584,27 @@ const handleDocPointerDown = (e: PointerEvent) => {
   }
 };
 
+const handleBeforeUnload = () => {
+  if (serverSaveTimer) {
+    clearTimeout(serverSaveTimer);
+    serverSaveTimer = null;
+  }
+  // Try to persist locally as well (fire and forget)
+  saveToIndexedDB();
+  saveToServer(true, true);
+};
+
 // Initial Load
 loadFromIndexedDB().then(async () => {
   if (!localData.value && props.widget.data) {
-     // Fallback to widget prop data if IDB is empty
-     if (typeof props.widget.data === 'string') {
+     if (typeof props.widget.data === "string") {
         localData.value = props.widget.data;
      } else {
-        const d = props.widget.data as { rich?: string; simple?: string; mode?: "simple" | "rich" };
+        const d = props.widget.data as { rich?: string; simple?: string; mode?: "simple" | "rich"; server_ts?: number; updatedAt?: number };
         localData.value = d.rich || d.simple || "";
         mode.value = d.mode || "simple";
+        serverTs.value = typeof d.server_ts === "number" ? d.server_ts : (typeof d.updatedAt === "number" ? d.updatedAt : 0);
      }
-     localUpdatedAt.value = Date.now();
   }
   await refreshVersions();
 });
@@ -371,16 +618,8 @@ watch([localData, mode], () => {
   autoSaveTimer = setTimeout(() => {
     saveToIndexedDB();
     saveToServer();
-  }, 800);
+  }, autoSaveDelay.value);
 });
-
-watch(
-  () => props.widget.data,
-  (data) => {
-    if (!data) return;
-    applyRemotePayload(data);
-  }
-);
 
 watch(historyVersions, () => {
   if (selectedVersionId.value === "new") return;
@@ -388,27 +627,12 @@ watch(historyVersions, () => {
   if (!exists) selectedVersionId.value = "new";
 });
 
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let idleCheckTimer: ReturnType<typeof setInterval> | null = null;
-let currentPollInterval = POLL_ACTIVE_INTERVAL;
-const handleVisibilityChange = () => {
-  isPageVisible.value = document.visibilityState === "visible";
-  updateSyncMode();
-};
-const pollRemote = async () => {
-  if (!store.isLogged || !store.isConnected || isEditing.value) return;
-  const id = props.widget.id;
-  if (!id) return;
-  if (import.meta.env.MODE === "test") return;
-  try {
-    const res = await fetch(`/api/widgets/${id}`, { headers: store.getHeaders() });
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data?.data) {
-      applyRemotePayload(data.data);
-    }
-  } catch {
-    return;
+
+
+const handleSocketUpdate = (data: any) => {
+  if (data?.widgetId !== props.widget.id) return;
+  if (data?.content) {
+    applyRemotePayload(data.content);
   }
 };
 
@@ -417,28 +641,54 @@ onMounted(() => {
   idleCheckTimer = setInterval(updateSyncMode, 1000);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   document.addEventListener("pointerdown", handleDocPointerDown);
+  
+  // Monitoring
+  window.addEventListener("online", handleOnline);
+  window.addEventListener("offline", handleOffline);
+  document.addEventListener("mousemove", handleUserActivity);
+  document.addEventListener("keydown", handleUserActivity);
+  document.addEventListener("touchstart", handleUserActivity);
+  window.addEventListener("beforeunload", handleBeforeUnload);
+  handleUserActivity(); // Init
+  
+  if (store.isLogged) {
+    // Fix Risk 2: Listen to WebSocket events
+    if (store.socket) {
+      store.socket.on("memo:updated", handleSocketUpdate);
+    }
+    // Initial fetch to align state
+    pollRemote();
+  }
+  
   refreshVersions();
 });
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer);
+  if (pollTimer) clearTimeout(pollTimer);
   if (idleCheckTimer) clearInterval(idleCheckTimer);
   if (serverSaveTimer) clearTimeout(serverSaveTimer);
   if (autoSaveTimer) clearTimeout(autoSaveTimer);
   if (broadcastTimer) clearTimeout(broadcastTimer);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   document.removeEventListener("pointerdown", handleDocPointerDown);
+  
+  // Cleanup monitoring
+  window.removeEventListener("online", handleOnline);
+  window.removeEventListener("offline", handleOffline);
+  document.removeEventListener("mousemove", handleUserActivity);
+  document.removeEventListener("keydown", handleUserActivity);
+  document.removeEventListener("touchstart", handleUserActivity);
+  window.removeEventListener("beforeunload", handleBeforeUnload);
+  
+  if (store.socket) {
+    store.socket.off("memo:updated", handleSocketUpdate);
+  }
+  
+  if (activityTimer) clearTimeout(activityTimer);
+  saveToServer(true, true);
 });
 
-const handleFocus = () => {
-  isEditing.value = true;
-  updateSyncMode();
-};
 
-const handleBlur = () => {
-  isEditing.value = false;
-  updateSyncMode();
-};
 
 </script>
 
@@ -448,13 +698,6 @@ const handleBlur = () => {
     :class="mode === 'simple' ? 'p-0' : 'p-4'"
     :style="containerStyle"
   >
-    <!-- Triple Feedback 3: Top Progress Bar -->
-    <div 
-      v-if="progress > 0" 
-      class="absolute top-0 left-0 h-1 bg-[#0052D9] transition-all duration-300 rounded-t-2xl z-20"
-      :style="{ width: `${progress}%`, opacity: progress === 100 ? 0 : 1 }"
-    ></div>
-
     <!-- Page Curl Toggle -->
     <div 
       class="absolute top-0 left-0 w-3 h-3 cursor-pointer z-50 overflow-hidden group/curl"
@@ -591,6 +834,36 @@ const handleBlur = () => {
           />
         </div>
       </Transition>
+    </div>
+
+    <!-- Conflict Resolution Overlay -->
+    <div
+      v-if="conflictState.hasConflict"
+      class="absolute inset-x-0 bottom-0 z-40 bg-red-50/95 border-t border-red-200 p-3 backdrop-blur-sm flex flex-col gap-2 shadow-lg"
+    >
+      <div class="text-xs text-red-600 font-bold flex items-center gap-2">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+        <span>检测到版本冲突 (Version Conflict)</span>
+      </div>
+      <p class="text-[10px] text-red-500 leading-tight">
+        云端存在更新的版本。请选择保留您的本地更改(将覆盖云端)，还是放弃本地更改使用云端版本。
+      </p>
+      <div class="flex gap-2 mt-1">
+        <button
+          @click="resolveConflict('local')"
+          class="flex-1 px-2 py-1.5 bg-white border border-red-200 text-red-600 text-xs font-medium rounded hover:bg-red-50 transition-colors"
+        >
+          保留本地 (Overwrite Remote)
+        </button>
+        <button
+          @click="resolveConflict('remote')"
+          class="flex-1 px-2 py-1.5 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 transition-colors"
+        >
+          使用云端 (Discard Local)
+        </button>
+      </div>
     </div>
 
     <!-- Toolbar (Rich Mode Only) -->

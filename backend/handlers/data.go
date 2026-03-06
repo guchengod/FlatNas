@@ -27,6 +27,17 @@ type getDataCacheEntry struct {
 
 var getDataCache = map[string]getDataCacheEntry{}
 var getDataCacheMu sync.RWMutex
+var memoFileMu sync.Mutex
+
+type MemoFileData struct {
+	Content  string `json:"content"`
+	ServerTS int64  `json:"server_ts"`
+}
+
+type SaveMemoPayload struct {
+	Content  string `json:"content"`
+	ServerTS *int64 `json:"server_ts"`
+}
 
 func normalizeVersion(v interface{}) int64 {
 	switch t := v.(type) {
@@ -42,6 +53,23 @@ func normalizeVersion(v interface{}) int64 {
 		}
 	}
 	return 0
+}
+
+func removeSensitiveFields(value interface{}, keys map[string]struct{}) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for k, item := range v {
+			if _, ok := keys[k]; ok {
+				delete(v, k)
+				continue
+			}
+			removeSensitiveFields(item, keys)
+		}
+	case []interface{}:
+		for _, item := range v {
+			removeSensitiveFields(item, keys)
+		}
+	}
 }
 
 func SetSocketServer(server *socketio.Server) {
@@ -152,6 +180,13 @@ func GetData(c *gin.Context) {
 			}
 			userData["widgets"] = filteredWidgets
 		}
+
+		sensitiveKeys := map[string]struct{}{
+			"lanUrl":        {},
+			"backupLanUrls": {},
+			"lanHost":       {},
+		}
+		removeSensitiveFields(userData, sensitiveKeys)
 	}
 	filterMs := time.Since(filterStart).Milliseconds()
 
@@ -218,6 +253,195 @@ func GetWidget(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusNotFound, gin.H{"error": "Widget not found"})
+}
+
+func sanitizeMemoID(raw string) string {
+	var b strings.Builder
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	s := strings.Trim(b.String(), "_")
+	if s == "" {
+		return "memo"
+	}
+	return s
+}
+
+func memoFilePath(username, widgetID string) string {
+	safeUser := sanitizeMemoID(username)
+	safeWidget := sanitizeMemoID(widgetID)
+	return filepath.Join(config.DataDir, "memo_"+safeUser+"_"+safeWidget+".json")
+}
+
+func extractMemoContentFromWidgetData(data interface{}) string {
+	if text, ok := data.(string); ok {
+		return text
+	}
+	obj, ok := data.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	if content, ok := obj["content"].(string); ok {
+		return content
+	}
+	if rich, ok := obj["rich"].(string); ok {
+		return rich
+	}
+	if simple, ok := obj["simple"].(string); ok {
+		return simple
+	}
+	return ""
+}
+
+func loadMemoFallbackContent(userFile, widgetID string) string {
+	var userData map[string]interface{}
+	if err := utils.ReadJSON(userFile, &userData); err != nil {
+		return ""
+	}
+	widgets, ok := userData["widgets"].([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, w := range widgets {
+		widgetMap, ok := w.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wID, ok := widgetMap["id"].(string)
+		if !ok || wID != widgetID {
+			continue
+		}
+		return extractMemoContentFromWidgetData(widgetMap["data"])
+	}
+	return ""
+}
+
+func ensureMemoFile(userFile, memoFile, widgetID string) (MemoFileData, error) {
+	var data MemoFileData
+	if err := utils.ReadJSON(memoFile, &data); err == nil {
+		return data, nil
+	}
+	if _, err := os.Stat(memoFile); err == nil {
+		return data, nil
+	} else if !os.IsNotExist(err) {
+		return data, err
+	}
+	content := loadMemoFallbackContent(userFile, widgetID)
+	serverTS := int64(0)
+	if content != "" {
+		serverTS = time.Now().UnixMilli()
+	}
+	initial := MemoFileData{
+		Content:  content,
+		ServerTS: serverTS,
+	}
+	if err := utils.WriteJSON(memoFile, initial); err != nil {
+		return MemoFileData{}, err
+	}
+	return initial, nil
+}
+
+func GetMemo(c *gin.Context) {
+	username := c.GetString("username")
+	if username == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	widgetID := c.Param("id")
+	if widgetID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Widget ID is required"})
+		return
+	}
+
+	var sysConfig models.SystemConfig
+	utils.ReadJSON(config.SystemConfigFile, &sysConfig)
+	userFile := filepath.Join(config.UsersDir, username+".json")
+	if username == "admin" && sysConfig.AuthMode == "single" {
+		userFile = filepath.Join(config.DataDir, "data.json")
+	}
+	memoFile := memoFilePath(username, widgetID)
+
+	memoFileMu.Lock()
+	defer memoFileMu.Unlock()
+	data, err := ensureMemoFile(userFile, memoFile, widgetID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read memo"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
+}
+
+func SaveMemo(c *gin.Context) {
+	username := c.GetString("username")
+	if username == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	widgetID := c.Param("id")
+	if widgetID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Widget ID is required"})
+		return
+	}
+
+	var payload SaveMemoPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+		return
+	}
+	if payload.ServerTS == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "server_ts is required"})
+		return
+	}
+
+	var sysConfig models.SystemConfig
+	utils.ReadJSON(config.SystemConfigFile, &sysConfig)
+	userFile := filepath.Join(config.UsersDir, username+".json")
+	if username == "admin" && sysConfig.AuthMode == "single" {
+		userFile = filepath.Join(config.DataDir, "data.json")
+	}
+	memoFile := memoFilePath(username, widgetID)
+
+	memoFileMu.Lock()
+	defer memoFileMu.Unlock()
+
+	current, err := ensureMemoFile(userFile, memoFile, widgetID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read memo"})
+		return
+	}
+	if *payload.ServerTS != current.ServerTS {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Version conflict",
+			"data":  current,
+		})
+		return
+	}
+
+	nextTS := time.Now().UnixMilli()
+	if nextTS <= current.ServerTS {
+		nextTS = current.ServerTS + 1
+	}
+	next := MemoFileData{
+		Content:  payload.Content,
+		ServerTS: nextTS,
+	}
+	if err := utils.WriteJSON(memoFile, next); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save memo"})
+		return
+	}
+
+	if socketServer != nil {
+		socketServer.BroadcastToNamespace("/", "memo:updated", map[string]interface{}{
+			"widgetId": widgetID,
+			"content":  next,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": next})
 }
 
 func SaveData(c *gin.Context) {

@@ -35,12 +35,15 @@ func ResolveWallpaper(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported protocol"})
 		return
 	}
-	if isBlockedHost(parsed.Hostname()) && !isAllowedWallpaperHost(parsed.Hostname()) {
+	if IsBlockedHost(parsed.Hostname()) && !isAllowedWallpaperHost(parsed.Hostname()) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Target host is not allowed"})
 		return
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	resp, err := client.Head(parsed.String())
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"url": req.URL})
@@ -68,7 +71,21 @@ func FetchWallpaper(c *gin.Context) {
 	}
 	fmt.Printf("DEBUG: FetchWallpaper URL: %s, Type: %s\n", req.URL, req.Type)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	parsed, err := url.Parse(req.URL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL"})
+		return
+	}
+
+	if IsBlockedHost(parsed.Hostname()) && !isAllowedWallpaperHost(parsed.Hostname()) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Target host is not allowed"})
+		return
+	}
+
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
 	resp, err := client.Get(req.URL)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to download image"})

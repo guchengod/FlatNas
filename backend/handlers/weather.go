@@ -50,9 +50,11 @@ type WeatherDay struct {
 // OpenMeteo Response Structures
 type OpenMeteoGeocodingResponse struct {
 	Results []struct {
-		Latitude  float64 `json:"latitude"`
-		Longitude float64 `json:"longitude"`
-		Name      string  `json:"name"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+		Name        string  `json:"name"`
+		CountryCode string  `json:"country_code"`
+		Country     string  `json:"country"`
 	} `json:"results"`
 }
 
@@ -70,12 +72,6 @@ type OpenMeteoWeatherResponse struct {
 	} `json:"daily"`
 }
 
-// Cache structure
-type cachedWeather struct {
-	Data      *WeatherData
-	Timestamp time.Time
-}
-
 type cachedAmapResponse struct {
 	Body        []byte
 	Timestamp   time.Time
@@ -84,12 +80,8 @@ type cachedAmapResponse struct {
 }
 
 var (
-	weatherCache     = make(map[string]cachedWeather)
-	cacheMutex       sync.RWMutex
-	amapWeatherCache = make(map[string]cachedWeather)
-	amapCacheMutex   sync.RWMutex
-	amapRawCache     = make(map[string]cachedAmapResponse)
-	amapRawMutex     sync.RWMutex
+	amapRawCache = make(map[string]cachedAmapResponse)
+	amapRawMutex sync.RWMutex
 )
 
 // AmapResponse maps the response from Amap
@@ -121,21 +113,50 @@ type AmapResponse struct {
 
 func BindWeatherHandlers(server *socketio.Server) {
 	server.OnEvent("/", "weather:fetch", func(s socketio.Conn, msg WeatherPayload) {
-		data, err := fetchWeatherLogic(msg)
-		if err != nil {
-			s.Emit("weather:error", gin.H{"city": msg.City, "error": err.Error()})
+		payload := normalizeWeatherPayload(msg)
+		if strings.TrimSpace(payload.City) == "" {
+			s.Emit("weather:error", gin.H{"city": msg.City, "error": "city is required"})
 			return
 		}
-		s.Emit("weather:data", gin.H{"city": msg.City, "data": data})
+		cacheKey := buildWeatherCacheKey(payload)
+		var cached WeatherData
+		hasCache, isFresh, _, err := sharedWidgetCache.Get(widgetCacheKindWeather, cacheKey, &cached)
+		if err == nil && hasCache {
+			s.Emit("weather:data", gin.H{"city": payload.City, "data": cached})
+		}
+		if hasCache && isFresh {
+			return
+		}
+		if hasCache {
+			go refreshWeatherAsync(server, payload)
+			return
+		}
+		data, err := fetchWeatherFromSource(payload)
+		if err != nil {
+			_ = sharedWidgetCache.MarkStatus(widgetCacheKindWeather, cacheKey, "error")
+			s.Emit("weather:error", gin.H{"city": payload.City, "error": err.Error()})
+			return
+		}
+		if err := sharedWidgetCache.Set(widgetCacheKindWeather, cacheKey, data, weatherTTL(payload), "ok"); err != nil {
+			s.Emit("weather:error", gin.H{"city": payload.City, "error": err.Error()})
+			return
+		}
+		s.Emit("weather:data", gin.H{"city": payload.City, "data": data})
 	})
 }
 
 func WarmWeatherCache(payloads []WeatherPayload) {
 	for _, payload := range payloads {
-		if strings.TrimSpace(payload.City) == "" {
+		normalized := normalizeWeatherPayload(payload)
+		if strings.TrimSpace(normalized.City) == "" {
 			continue
 		}
-		_, _ = fetchWeatherLogic(payload)
+		data, err := fetchWeatherFromSource(normalized)
+		if err != nil {
+			_ = sharedWidgetCache.MarkStatus(widgetCacheKindWeather, buildWeatherCacheKey(normalized), "error")
+			continue
+		}
+		_ = sharedWidgetCache.Set(widgetCacheKindWeather, buildWeatherCacheKey(normalized), data, weatherTTL(normalized), "ok")
 	}
 }
 
@@ -160,13 +181,27 @@ func GetWeather(c *gin.Context) {
 		KeyId:      keyId,
 		PrivateKey: privateKey,
 	}
-
-	data, err := fetchWeatherLogic(payload)
-	if err != nil {
+	payload = normalizeWeatherPayload(payload)
+	cacheKey := buildWeatherCacheKey(payload)
+	var cached WeatherData
+	hasCache, isFresh, _, err := sharedWidgetCache.Get(widgetCacheKindWeather, cacheKey, &cached)
+	if err == nil && hasCache {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": cached})
+		if !isFresh {
+			go refreshWeatherHTTP(payload)
+		}
+		return
+	}
+	data, fetchErr := fetchWeatherFromSource(payload)
+	if fetchErr != nil {
+		_ = sharedWidgetCache.MarkStatus(widgetCacheKindWeather, cacheKey, "error")
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": fetchErr.Error()})
+		return
+	}
+	if err := sharedWidgetCache.Set(widgetCacheKindWeather, cacheKey, data, weatherTTL(payload), "ok"); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 
@@ -204,7 +239,10 @@ func GetAmapWeather(c *gin.Context) {
 		url.QueryEscape(extensions),
 	)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	resp, err := client.Get(targetURL)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"status": "0", "info": "Failed to connect to Amap API"})
@@ -261,7 +299,10 @@ func proxyRequest(c *gin.Context, targetURL string) {
 	}
 
 	// Execute request
-	client := &http.Client{Timeout: 10 * time.Second}
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"status": "0", "info": "Failed to connect to Amap API"})
@@ -279,73 +320,74 @@ func proxyRequest(c *gin.Context, targetURL string) {
 	io.Copy(c.Writer, resp.Body)
 }
 
-func fetchWeatherLogic(p WeatherPayload) (*WeatherData, error) {
+func normalizeWeatherPayload(p WeatherPayload) WeatherPayload {
+	p.City = strings.TrimSpace(p.City)
+	p.Source = strings.TrimSpace(strings.ToLower(p.Source))
+	p.Key = strings.TrimSpace(p.Key)
+	p.ProjectId = strings.TrimSpace(p.ProjectId)
+	p.KeyId = strings.TrimSpace(p.KeyId)
+	p.PrivateKey = strings.TrimSpace(p.PrivateKey)
+	return p
+}
+
+func buildWeatherCacheKey(p WeatherPayload) string {
+	p = normalizeWeatherPayload(p)
+	return strings.Join([]string{p.City, p.Source, p.Key, p.ProjectId, p.KeyId, p.PrivateKey}, "|")
+}
+
+func weatherTTL(p WeatherPayload) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(p.Source), "amap") && strings.TrimSpace(p.Key) != "" {
+		return 15 * time.Minute
+	}
+	return 10 * time.Minute
+}
+
+func fetchWeatherFromSource(p WeatherPayload) (*WeatherData, error) {
+	p = normalizeWeatherPayload(p)
 	if p.Source == "amap" && p.Key != "" && p.Key != "wttr.in" {
-		return fetchAmapWithCache(p.City, p.Key)
+		return fetchAmap(p.City, p.Key)
 	}
-	// Use OpenMeteo (replaces UAPI) with cache (18 hours)
-	return fetchUAPIWithCache(p.City)
+	return fetchOpenMeteo(p.City)
 }
 
-func fetchAmapWithCache(city, key string) (*WeatherData, error) {
-	cacheKey := city + "|" + key
-	amapCacheMutex.RLock()
-	if item, ok := amapWeatherCache[cacheKey]; ok {
-		if time.Since(item.Timestamp) < 2*time.Hour {
-			amapCacheMutex.RUnlock()
-			return item.Data, nil
-		}
+func refreshWeatherHTTP(p WeatherPayload) {
+	tag := "weather:" + buildWeatherCacheKey(p)
+	if !sharedWidgetCache.StartRefresh(tag) {
+		return
 	}
-	amapCacheMutex.RUnlock()
-
-	data, err := fetchAmap(city, key)
+	defer sharedWidgetCache.EndRefresh(tag)
+	data, err := fetchWeatherFromSource(p)
 	if err != nil {
-		return nil, err
+		_ = sharedWidgetCache.MarkStatus(widgetCacheKindWeather, buildWeatherCacheKey(p), "error")
+		return
 	}
-
-	amapCacheMutex.Lock()
-	amapWeatherCache[cacheKey] = cachedWeather{
-		Data:      data,
-		Timestamp: time.Now(),
-	}
-	amapCacheMutex.Unlock()
-
-	return data, nil
+	_ = sharedWidgetCache.Set(widgetCacheKindWeather, buildWeatherCacheKey(p), data, weatherTTL(p), "ok")
 }
 
-func fetchUAPIWithCache(city string) (*WeatherData, error) {
-	cacheMutex.RLock()
-	if item, ok := weatherCache[city]; ok {
-		if time.Since(item.Timestamp) < 18*time.Hour {
-			cacheMutex.RUnlock()
-			return item.Data, nil
-		}
+func refreshWeatherAsync(server *socketio.Server, p WeatherPayload) {
+	tag := "weather:" + buildWeatherCacheKey(p)
+	if !sharedWidgetCache.StartRefresh(tag) {
+		return
 	}
-	cacheMutex.RUnlock()
-
-	// Fetch new data
-	data, err := fetchOpenMeteo(city)
+	defer sharedWidgetCache.EndRefresh(tag)
+	data, err := fetchWeatherFromSource(p)
 	if err != nil {
-		return nil, err
+		_ = sharedWidgetCache.MarkStatus(widgetCacheKindWeather, buildWeatherCacheKey(p), "error")
+		return
 	}
-
-	// Update cache
-	cacheMutex.Lock()
-	weatherCache[city] = cachedWeather{
-		Data:      data,
-		Timestamp: time.Now(),
-	}
-	cacheMutex.Unlock()
-
-	return data, nil
+	_ = sharedWidgetCache.Set(widgetCacheKindWeather, buildWeatherCacheKey(p), data, weatherTTL(p), "ok")
+	server.BroadcastToNamespace("/", "weather:data", gin.H{"city": p.City, "data": data})
 }
 
 func fetchOpenMeteo(city string) (*WeatherData, error) {
 	// 1. Geocoding
-	geoURL := fmt.Sprintf("https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=zh&format=json", url.QueryEscape(city))
+	geoURL := fmt.Sprintf("https://geocoding-api.open-meteo.com/v1/search?name=%s&count=10&language=zh&format=json", url.QueryEscape(city))
 	fmt.Printf("[Weather] Geocoding: %s\n", geoURL)
 
-	client := http.Client{Timeout: 10 * time.Second}
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	respGeo, err := client.Get(geoURL)
 	if err != nil {
 		return nil, fmt.Errorf("geocoding failed: %v", err)
@@ -361,9 +403,44 @@ func fetchOpenMeteo(city string) (*WeatherData, error) {
 		return nil, fmt.Errorf("city not found: %s", city)
 	}
 
-	lat := geoResp.Results[0].Latitude
-	lon := geoResp.Results[0].Longitude
-	cityName := geoResp.Results[0].Name // Use name from API (usually localized if language=zh)
+	// Prioritize CN and name match
+	bestMatch := geoResp.Results[0]
+	bestScore := -99999
+
+	targetName := strings.ToLower(city)
+
+	for _, res := range geoResp.Results {
+		score := 0
+		// Base score for country match
+		if res.CountryCode == "CN" {
+			score += 1000
+		}
+
+		// Name closeness (inversely proportional to Levenshtein distance)
+		dist := levenshtein(strings.ToLower(res.Name), targetName)
+		score -= dist * 10 // Penalize distance
+
+		// Exact match bonus
+		if strings.EqualFold(res.Name, city) {
+			score += 500
+		}
+
+		if score > bestScore {
+			bestScore = score
+			bestMatch = res
+		}
+	}
+
+	lat := bestMatch.Latitude
+	lon := bestMatch.Longitude
+	cityName := bestMatch.Name // Use name from API (usually localized if language=zh)
+
+	// Warning log for country-level match
+	if strings.EqualFold(cityName, bestMatch.Country) ||
+		strings.EqualFold(cityName, "China") ||
+		strings.EqualFold(cityName, "中国") {
+		fmt.Printf("[Weather] Warning: Geocoding resolved to country-level name '%s' for input '%s'\n", cityName, city)
+	}
 
 	// 2. Weather Data
 	weatherURL := fmt.Sprintf("https://api.open-meteo.com/v1/forecast?latitude=%f&longitude=%f&current=temperature_2m,relative_humidity_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto", lat, lon)
@@ -413,6 +490,52 @@ func fetchOpenMeteo(city string) (*WeatherData, error) {
 	return data, nil
 }
 
+func levenshtein(s1, s2 string) int {
+	r1, r2 := []rune(s1), []rune(s2)
+	n, m := len(r1), len(r2)
+	if n == 0 {
+		return m
+	}
+	if m == 0 {
+		return n
+	}
+	matrix := make([][]int, n+1)
+	for i := range matrix {
+		matrix[i] = make([]int, m+1)
+	}
+	for i := 0; i <= n; i++ {
+		matrix[i][0] = i
+	}
+	for j := 0; j <= m; j++ {
+		matrix[0][j] = j
+	}
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= m; j++ {
+			cost := 0
+			if r1[i-1] != r2[j-1] {
+				cost = 1
+			}
+			min1 := matrix[i-1][j] + 1
+			min2 := matrix[i][j-1] + 1
+			min3 := matrix[i-1][j-1] + cost
+			if min1 < min2 {
+				if min1 < min3 {
+					matrix[i][j] = min1
+				} else {
+					matrix[i][j] = min3
+				}
+			} else {
+				if min2 < min3 {
+					matrix[i][j] = min2
+				} else {
+					matrix[i][j] = min3
+				}
+			}
+		}
+	}
+	return matrix[n][m]
+}
+
 func getWeatherText(code int) string {
 	switch code {
 	case 0:
@@ -452,7 +575,10 @@ func fetchAmap(city, key string) (*WeatherData, error) {
 
 	// 1. Get Live Weather
 	liveURL := fmt.Sprintf("https://restapi.amap.com/v3/weather/weatherInfo?city=%s&key=%s&extensions=base", url.QueryEscape(city), key)
-	client := http.Client{Timeout: 10 * time.Second}
+	client, err := getSharedProxyClient()
+	if err != nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 
 	respLive, err := client.Get(liveURL)
 	if err != nil {

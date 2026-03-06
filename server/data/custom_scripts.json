@@ -1,14 +1,6 @@
 {
   "admin": {
-    "css": [
-      {
-        "content": "",
-        "enable": true,
-        "id": "1772212699402",
-        "name": "新脚本 1",
-        "useProxy": false
-      }
-    ],
+    "css": [],
     "js": []
   }
 }

@@ -111,6 +111,14 @@ export interface AppConfig {
   daylightMask?: number;
   weatherEffectEnabled?: boolean;
   internalDomains?: string;
+  networkRules?: string;
+  networkPresets?: {
+    tailscale?: boolean;
+    zerotier?: boolean;
+    frp?: boolean;
+    cloudflareTunnel?: boolean;
+    ngrok?: boolean;
+  };
   forceNetworkMode?: "auto" | "lan" | "wan" | "latency";
   latencyThresholdMs?: number;
   customTitle: string;

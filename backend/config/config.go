@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 //go:embed default.json
@@ -38,9 +39,11 @@ func Init() {
 	}
 	// Adjust BaseDir if running from backend or frontend directory
 	if filepath.Base(cwd) == "backend" || filepath.Base(cwd) == "frontend" {
-		BaseDir = filepath.Dir(cwd)
-	} else {
+		BaseDir = filepath.Join(filepath.Dir(cwd), "win")
+	} else if filepath.Base(cwd) == "win" {
 		BaseDir = cwd
+	} else {
+		BaseDir = filepath.Join(cwd, "win")
 	}
 
 	DataDir = filepath.Join(BaseDir, "server", "data")
@@ -59,6 +62,7 @@ func Init() {
 	ensureDirs()
 	ensureSystemConfig()
 	ensureDataFile()
+	ensureAdditionalDataFiles()
 	loadSecretKey()
 }
 
@@ -177,4 +181,52 @@ func loadSecretKey() {
 
 func GetSecretKeyString() string {
 	return string(SecretKey)
+}
+
+func ensureAdditionalDataFiles() {
+	// Ensure amap_stats.json
+	amapStatsFile := filepath.Join(DataDir, "amap_stats.json")
+	if _, err := os.Stat(amapStatsFile); os.IsNotExist(err) {
+		initialStats := map[string]interface{}{
+			"total":    0,
+			"today":    0,
+			"lastDate": time.Now().Format("2006-01-02"),
+		}
+		if data, err := json.MarshalIndent(initialStats, "", "  "); err == nil {
+			if err := os.WriteFile(amapStatsFile, data, 0644); err != nil {
+				log.Printf("Failed to create amap_stats.json: %v", err)
+			}
+		}
+	}
+
+	// Ensure visitors.json
+	visitorsFile := filepath.Join(DataDir, "visitors.json")
+	if _, err := os.Stat(visitorsFile); os.IsNotExist(err) {
+		initialVisitors := map[string]interface{}{
+			"totalVisitors": 0,
+			"todayVisitors": 0,
+			"lastVisitDate": time.Now().Format("2006-01-02"),
+		}
+		if data, err := json.MarshalIndent(initialVisitors, "", "  "); err == nil {
+			if err := os.WriteFile(visitorsFile, data, 0644); err != nil {
+				log.Printf("Failed to create visitors.json: %v", err)
+			}
+		}
+	}
+
+	// Ensure custom_scripts.json
+	customScriptsFile := filepath.Join(DataDir, "custom_scripts.json")
+	if _, err := os.Stat(customScriptsFile); os.IsNotExist(err) {
+		if err := os.WriteFile(customScriptsFile, []byte("{}"), 0644); err != nil {
+			log.Printf("Failed to create custom_scripts.json: %v", err)
+		}
+	}
+
+	// Ensure widget_cache.json
+	widgetCacheFile := filepath.Join(DataDir, "widget_cache.json")
+	if _, err := os.Stat(widgetCacheFile); os.IsNotExist(err) {
+		if err := os.WriteFile(widgetCacheFile, []byte("{}"), 0644); err != nil {
+			log.Printf("Failed to create widget_cache.json: %v", err)
+		}
+	}
 }

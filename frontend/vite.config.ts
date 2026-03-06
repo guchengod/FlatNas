@@ -4,11 +4,16 @@ import vue from "@vitejs/plugin-vue";
 import vueDevTools from "vite-plugin-vue-devtools";
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => ({
+export default defineConfig(({ mode }) => {
+  const isWindows = process.platform === "win32";
+  const winPublicDir = fileURLToPath(new URL("../win/server/public", import.meta.url));
+  return ({
   base: "/",
-  publicDir: "../server/public",
+  publicDir: isWindows ? "../win/server/public" : "../server/public",
   build: {
     sourcemap: false,
+    outDir: isWindows ? winPublicDir : "dist",
+    emptyOutDir: true,
   },
   plugins: [vue(), mode === "development" && vueDevTools()],
   resolve: {
@@ -21,6 +26,8 @@ export default defineConfig(({ mode }) => ({
     host: "0.0.0.0",
     watch: {
       ignored: ["**/data/**", "**/server/**"],
+      usePolling: isWindows,
+      interval: isWindows ? 180 : undefined,
     },
     proxy: {
       // 告诉 Vite：遇到 /api 开头的请求，转给 3000 端口
@@ -59,4 +66,4 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
-}));
+})});

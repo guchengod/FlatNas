@@ -12,6 +12,7 @@ import SystemStatusWidget from "./SystemStatusWidget.vue";
 import RssSettings from "./RssSettings.vue";
 import SearchSettings from "./SearchSettings.vue";
 import ScriptManager from "./ScriptManager.vue";
+import { DEFAULT_NETWORK_RULES, NETWORK_PRESET_RULES } from "@/utils/network";
 
 const props = defineProps<{ show: boolean }>();
 const emit = defineEmits(["update:show"]);
@@ -87,6 +88,71 @@ const resetLatencyThreshold = async () => {
     latencyThresholdAppliedToast.value = "";
     latencyThresholdToastTimer = null;
   }, 1200);
+};
+
+const mergeLegacyInternalDomainsToRules = () => {
+  const legacy = String(store.appConfig.internalDomains || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const existing = String(store.appConfig.networkRules || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (legacy.length === 0) return;
+
+  const mapped = legacy.map((line) => {
+    if (line.includes(":")) return line;
+    if (/^\d{1,3}(\.\d{1,3}){0,3}\.?$/.test(line)) return `ip:${line}`;
+    return `domain_suffix:${line}`;
+  });
+
+  const merged = Array.from(new Set([...existing, ...mapped]));
+  store.appConfig.networkRules = merged.join("\n");
+};
+
+const applyDefaultNetworkRules = async () => {
+  mergeLegacyInternalDomainsToRules();
+  const existing = String(store.appConfig.networkRules || "").trim();
+  store.appConfig.networkRules = existing
+    ? `${existing}\n${DEFAULT_NETWORK_RULES}`
+    : DEFAULT_NETWORK_RULES;
+  await store.saveData(true);
+};
+
+const resetNetworkRules = async () => {
+  store.appConfig.networkRules = DEFAULT_NETWORK_RULES;
+  await store.saveData(true);
+};
+
+const ensureNetworkPresets = () => {
+  if (!store.appConfig.networkPresets) {
+    store.appConfig.networkPresets = {
+      tailscale: false,
+      zerotier: false,
+      frp: false,
+      cloudflareTunnel: false,
+      ngrok: false,
+    };
+  }
+};
+
+const presetMeta: Record<string, { label: string; desc: string }> = {
+  tailscale: { label: "Tailscale", desc: "自动识别 .ts.net 与 100.64.x.x" },
+  zerotier: { label: "ZeroTier", desc: "自动识别 .zerotier.net" },
+  frp: { label: "FRP", desc: "启用后可叠加你的自定义 FRP 域名规则" },
+  cloudflareTunnel: { label: "Cloudflare Tunnel", desc: "识别 trycloudflare 域名" },
+  ngrok: { label: "ngrok", desc: "识别 ngrok 域名" },
+};
+
+const presetKeys = Object.keys(NETWORK_PRESET_RULES);
+
+const toggleNetworkPreset = async (key: string) => {
+  ensureNetworkPresets();
+  const current = !!store.appConfig.networkPresets?.[key as keyof NonNullable<typeof store.appConfig.networkPresets>];
+  store.appConfig.networkPresets![key as keyof NonNullable<typeof store.appConfig.networkPresets>] = !current;
+  await store.saveData(true);
 };
 
 const showWallpaperLibrary = ref(false);
@@ -818,6 +884,44 @@ const loadingVersions = ref(false);
 const isImporting = ref(false);
 const importProgress = ref(0);
 const importTotal = ref(0);
+
+// 文件传输：缩略图管理
+const isRegeneratingThumbs = ref(false);
+const thumbRegenerationStats = ref<{ processed: number; generated: number; errors: string[] } | null>(null);
+
+const regenerateAllThumbs = async () => {
+  if (!confirm("确定要重新生成所有缺失的缩略图吗？\n这可能需要一些时间。")) return;
+  
+  isRegeneratingThumbs.value = true;
+  thumbRegenerationStats.value = null;
+  
+  try {
+    const token = localStorage.getItem("flat-nas-token");
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    
+    const response = await fetch("/api/transfer/regenerate-thumbs", {
+      method: "POST",
+      headers,
+    });
+    
+    if (response.ok) {
+      const stats = await response.json();
+      thumbRegenerationStats.value = {
+        processed: stats.processed || 0,
+        generated: stats.generated || 0,
+        errors: stats.errors || [],
+      };
+    } else {
+      alert("缩略图重新生成失败");
+    }
+  } catch (err) {
+    console.error("Failed to regenerate thumbnails:", err);
+    alert("缩略图重新生成失败");
+  } finally {
+    isRegeneratingThumbs.value = false;
+  }
+};
 
 const fetchVersions = async () => {
   try {
@@ -1913,7 +2017,7 @@ watch(activeTab, (val) => {
                     @click="
                       store.appConfig.hideHeaderOnMobile = !store.appConfig.hideHeaderOnMobile
                     "
-                    class="hidden xl:flex flex-1 p-2 border-2 rounded-xl items-center justify-center gap-2 transition-colors"
+                    class="flex flex-1 p-2 border-2 rounded-xl items-center justify-center gap-2 transition-colors"
                     :class="
                       store.appConfig.hideHeaderOnMobile
                         ? 'selected-outline text-gray-900'
@@ -3394,41 +3498,91 @@ watch(activeTab, (val) => {
 
           <div v-if="activeTab === 'network'" class="p-4 space-y-4">
             <h4 class="text-base font-bold text-gray-900 border-l-4 border-gray-900 pl-3 mb-4">
-              网络环境判定设置（白名单）
+              网络环境判定设置（规则）
             </h4>
 
-            <div class="bg-gray-50 border border-gray-100 rounded-xl p-4">
-              <div class="flex items-start gap-2 mb-3">
+            <div class="bg-gray-50 border border-gray-100 rounded-xl p-4 space-y-3">
+              <div class="flex items-start gap-2">
                 <span
                   class="text-xs text-gray-500 font-medium border border-gray-200 rounded px-1.5 py-0.5 mt-0.5"
                   >注</span
                 >
                 <p class="text-xs text-gray-600 leading-relaxed">
-                  FlatNas 会自动检测您的网络环境。如果检测到您处于内网（如家庭 Wi-Fi），
-                  应用卡片会自动切换到内网地址以提高速度。
-                  <br />
-                  如果您使用了<b>内网穿透</b>或<b>P2P工具</b>（如 FRP, ZeroTier, Tailscale），
-                  请将这些域名或 IP 段添加到下方白名单中，以便 FlatNas 将其识别为“内网环境”。
+                  FlatNas 会自动识别 <b>内网 (lan)</b>、<b>组网 (overlay)</b>、<b>公网 (wan)</b>。
+                  建议使用规则格式（每行一个）：
+                  <code>domain_suffix:</code>、<code>host:</code>、<code>ip:</code>。
+                  旧版白名单依然兼容。
                 </p>
               </div>
 
-              <div class="space-y-3">
-                <label class="block text-sm font-medium text-gray-700">
-                  自定义内网域名/IP白名单
-                </label>
+              <div class="space-y-2">
+                <label class="block text-sm font-medium text-gray-700">常见穿透 / 组网预设（推荐）</label>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    v-for="key in presetKeys"
+                    :key="key"
+                    type="button"
+                    @click="toggleNetworkPreset(key)"
+                    class="text-left px-3 py-2 rounded-lg border transition-colors"
+                    :class="
+                      store.appConfig.networkPresets?.[key as keyof typeof store.appConfig.networkPresets]
+                        ? 'border-blue-500 bg-blue-50 text-blue-700'
+                        : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                    "
+                  >
+                    <div class="text-xs font-bold">{{ presetMeta[key]?.label || key }}</div>
+                    <div class="text-[11px] opacity-80">{{ presetMeta[key]?.desc || '' }}</div>
+                  </button>
+                </div>
+                <p class="text-[10px] text-gray-500">
+                  * 启用后会自动参与网络环境判定（内网/组网/公网），无需手动切换。
+                </p>
+              </div>
+
+              <div class="space-y-2">
+                <label class="block text-sm font-medium text-gray-700">网络规则（高级）</label>
+                <textarea
+                  v-model="store.appConfig.networkRules"
+                  @change="store.saveData()"
+                  rows="7"
+                  class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-gray-900 outline-none font-mono"
+                  placeholder="示例：
+iepose.cn
+*.iepose.cn
+domain_suffix:.ts.net
+host:frp.example.com
+ip:100.64."
+                ></textarea>
+                <p class="text-[11px] text-gray-500">
+                  现在支持简写：直接填域名即可（如 <code>iepose.cn</code> 或 <code>*.iepose.cn</code>），会自动按“匹配该域名及所有子域名”处理。
+                </p>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    @click="applyDefaultNetworkRules"
+                    class="px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+                  >
+                    追加默认规则模板
+                  </button>
+                  <button
+                    type="button"
+                    @click="resetNetworkRules"
+                    class="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition-colors"
+                  >
+                    重置为默认模板
+                  </button>
+                </div>
+              </div>
+
+              <div class="space-y-2">
+                <label class="block text-sm font-medium text-gray-700">旧版白名单（兼容）</label>
                 <textarea
                   v-model="store.appConfig.internalDomains"
                   @change="store.saveData()"
-                  rows="4"
+                  rows="3"
                   class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-gray-900 outline-none font-mono"
-                  placeholder="每行一个，支持域名后缀或 IP 段。例如：
-.frp.yourdomain.com
-100.64.
-192.168.100."
+                  placeholder="每行一个（旧格式），仍可继续使用"
                 ></textarea>
-                <p class="text-[10px] text-gray-500">
-                  * 系统默认已包含 localhost, 127.0.0.1, 192.168.x.x, 10.x.x.x 等标准私有地址。
-                </p>
               </div>
             </div>
 
@@ -3477,6 +3631,9 @@ watch(activeTab, (val) => {
                   <span class="text-sm text-gray-700">强制外网</span>
                 </label>
               </div>
+              <p class="mt-2 text-[11px] text-gray-500">
+                提示：已添加的域名规则在“自动判定”下就会生效；“延迟判定”仅在你切换到该模式时，才会按延迟阈值进一步判定。
+              </p>
               <div v-if="store.appConfig.forceNetworkMode === 'latency'" class="mt-3 space-y-1.5">
                 <div class="flex flex-col sm:flex-row sm:items-center gap-2">
                   <div class="text-xs text-gray-600 sm:w-28 shrink-0">延迟阈值 (ms)</div>
@@ -4094,6 +4251,44 @@ document.querySelector('.card-item').addEventListener('click', () => {
                 </button>
               </div>
             </div>
+
+            <div class="space-y-3 pt-6 border-t border-gray-200">
+              <h5 class="text-sm font-bold text-gray-900 mb-3">🖼️ 文件传输缩略图</h5>
+              <div class="text-xs text-gray-600 mb-3">
+                为所有图片文件重新生成缺失的预览缩略图（64×64 像素）
+              </div>
+              <div class="flex items-center gap-3">
+                <button
+                  @click="regenerateAllThumbs"
+                  :disabled="isRegeneratingThumbs"
+                  class="text-gray-900 px-4 py-2 rounded-lg transition-colors font-bold disabled:opacity-60 glass-chip selectable-outline text-sm"
+                >
+                  {{ isRegeneratingThumbs ? "生成中..." : "重新生成缩略图" }}
+                </button>
+              </div>
+              <div v-if="thumbRegenerationStats" class="mt-3 space-y-2 animate-fade-in">
+                <div class="bg-white/60 p-3 rounded-lg border border-gray-200">
+                  <div class="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span class="text-gray-500">已处理：</span>
+                      <span class="font-bold text-gray-900">{{ thumbRegenerationStats.processed }}</span>
+                    </div>
+                    <div>
+                      <span class="text-gray-500">已生成：</span>
+                      <span class="font-bold text-green-600">{{ thumbRegenerationStats.generated }}</span>
+                    </div>
+                  </div>
+                  <div v-if="thumbRegenerationStats.errors.length > 0" class="mt-2 pt-2 border-t border-gray-200">
+                    <div class="text-xs text-red-600 font-medium mb-1">错误：</div>
+                    <div class="text-xs text-gray-600 max-h-20 overflow-y-auto space-y-1">
+                      <div v-for="(err, idx) in thumbRegenerationStats.errors" :key="idx">
+                        {{ err }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div v-if="activeTab === 'account'" class="min-h-full flex flex-col justify-center">
@@ -4679,6 +4874,12 @@ document.querySelector('.card-item').addEventListener('click', () => {
 .night-settings :deep(.bg-gray-100):hover {
   background-color: rgba(15, 23, 42, 0.55) !important;
   backdrop-filter: blur(12px);
+}
+/* 夜间模式：侧栏等使用 hover:bg-gray-50 的按钮悬停时用深色背景，避免与浅色文字同色 */
+.night-settings :deep(.hover\:bg-gray-50):hover,
+.night-settings :deep(.hover\:bg-gray-100):hover {
+  background-color: rgba(15, 23, 42, 0.55) !important;
+  backdrop-filter: blur(8px);
 }
 .night-settings :deep(.text-gray-900),
 .night-settings :deep(.text-gray-800),

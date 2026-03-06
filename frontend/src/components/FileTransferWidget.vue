@@ -13,7 +13,14 @@ type TransferItem =
       id: string;
       type: "file";
       timestamp: number;
-      file: { name: string; size: number; type: string; ext?: string; url: string };
+      file: {
+        name: string;
+        size: number;
+        type: string;
+        ext?: string;
+        url: string;
+        thumbs?: Record<string, string>;
+      };
     };
 
 type UploadStatus = "queued" | "uploading" | "paused" | "failed" | "completed";
@@ -120,6 +127,76 @@ const authHeaderOnly = () => {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
+};
+
+const withAuthToken = (rawUrl?: string) => {
+  const value = String(rawUrl || "").trim();
+  if (!value) return "";
+  const token = store.token || localStorage.getItem("flat-nas-token");
+  if (!token) return value;
+  try {
+    const base = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+    const u = new URL(value, base);
+    if (!u.searchParams.get("token")) {
+      u.searchParams.set("token", token);
+    }
+    if (/^https?:\/\//i.test(value)) return u.toString();
+    return `${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    const sep = value.includes("?") ? "&" : "?";
+    return `${value}${sep}token=${encodeURIComponent(token)}`;
+  }
+};
+
+const thumbUrlFor = (item: TransferItem, size: "64" | "128" | "256") => {
+  if (item.type !== "file") return "";
+  return withAuthToken(item.file.thumbs?.[size]);
+};
+
+const previewPlaceholderUrl = (item?: TransferItem | null) => {
+  if (!item || item.type !== "file") return "";
+  return thumbUrlFor(item, "256") || thumbUrlFor(item, "128") || thumbUrlFor(item, "64");
+};
+
+const pendingThumbRequests = ref<Record<string, boolean>>({});
+const thumbGenerating = ref<Record<string, boolean>>({});
+
+const requestThumbGeneration = async (item: TransferItem) => {
+  if (item.type !== "file") return;
+  if (!item.file.type?.startsWith("image/")) return;
+  
+  const filename = item.file.url.split("/").pop();
+  if (!filename) return;
+  
+  const requestKey = `${filename}_64`;
+  if (pendingThumbRequests.value[requestKey]) return;
+  
+  pendingThumbRequests.value[requestKey] = true;
+  thumbGenerating.value[item.id] = true;
+  
+  try {
+    const response = await fetch(`${store.baseUrl}/api/transfer/generate-thumb/${filename}/64`, {
+      method: "POST",
+      headers: authHeaderOnly(),
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      if (result.thumbs) {
+        const idx = items.value.findIndex(i => i.id === item.id);
+        if (idx !== -1 && items.value[idx].type === "file") {
+          if (!items.value[idx].file.thumbs) {
+            items.value[idx].file.thumbs = {};
+          }
+          Object.assign(items.value[idx].file.thumbs, result.thumbs);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Failed to generate thumbnail:", err);
+  } finally {
+    delete thumbGenerating.value[item.id];
+  }
 };
 
 const formatBytes = (bytes: number) => {
@@ -653,8 +730,12 @@ const sendText = async () => {
 const openPreview = async (item: TransferItem) => {
   previewItem.value = item;
   previewOpen.value = true;
-  if (item.type === "file") {
-    await ensureBlobUrl(item.id, item.file.url);
+  if (item.type === "file" && String(item.file.type || "").startsWith("image/")) {
+    try {
+      await ensureBlobUrl(item.id, item.file.url);
+    } catch (e) {
+      void e;
+    }
   }
 };
 
@@ -688,30 +769,47 @@ const downloadItem = async (item?: TransferItem | null) => {
     if (!ok) return;
   }
 
+  const wakeWin = isMobile.value ? window.open("about:blank", "_blank") : null;
+
   try {
     const tokenRes = await fetch("/api/transfer/download-token", {
       method: "POST",
       headers: store.getHeaders(),
       body: JSON.stringify({ url: item.file.url }),
+      cache: "no-store",
     });
     const tokenData = await tokenRes.json().catch(() => ({}));
     if (tokenRes.ok && tokenData.success && typeof tokenData.token === "string") {
-      const a = document.createElement("a");
-      a.href = `${item.file.url}?download=1&token=${encodeURIComponent(tokenData.token)}`;
-      a.download = item.file.name || "download";
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      const sep = item.file.url.includes("?") ? "&" : "?";
+      const finalUrl = `${item.file.url}${sep}download=1&token=${encodeURIComponent(tokenData.token)}&ts=${Date.now()}`;
+      if (wakeWin && !wakeWin.closed) {
+        wakeWin.location.href = finalUrl;
+      } else {
+        const a = document.createElement("a");
+        a.href = finalUrl;
+        a.download = item.file.name || "download";
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
       return;
     }
   } catch {
     // ignore and fallback
   }
 
+  if (wakeWin && !wakeWin.closed) {
+    wakeWin.close();
+  }
+
   const headers = authHeaderOnly();
-  const res = await fetch(`${item.file.url}?download=1`, { headers });
+  const sep = item.file.url.includes("?") ? "&" : "?";
+  const res = await fetch(`${item.file.url}${sep}download=1&ts=${Date.now()}`, {
+    headers,
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const blob = await res.blob();
   const objectUrl = URL.createObjectURL(blob);
@@ -761,6 +859,23 @@ const deleteSelected = async () => {
   }
 };
 
+const downloadSelected = async () => {
+  const ids = Object.entries(selectedIds.value)
+    .filter(([, v]) => v)
+    .map(([k]) => k);
+  for (const id of ids) {
+    const it = findItemById(id);
+    if (it && it.type === "file") {
+      try {
+        await downloadItem(it);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        error.value = msg || "下载失败";
+      }
+    }
+  }
+};
+
 watch(
   () => [store.isLogged, activeTab.value],
   async () => {
@@ -794,16 +909,7 @@ const setupObserver = () => {
         const target = entry.target as HTMLElement;
         const id = target.dataset.observeId;
         if (!id) continue;
-        if (entry.isIntersecting) {
-          const item = findItemById(id);
-          if (
-            item &&
-            item.type === "file" &&
-            String(item.file.type || "").startsWith("image/")
-          ) {
-            ensureBlobUrl(item.id, item.file.url).catch(() => {});
-          }
-        } else {
+        if (!entry.isIntersecting) {
           releaseBlobUrl(id);
         }
       }
@@ -836,6 +942,17 @@ watch(activeTab, () => {
   for (const id of Object.keys(blobUrlById.value)) releaseObjectUrl(`transfer:${id}`, true);
   blobUrlById.value = {};
 });
+
+watch(items, () => {
+  for (const item of items.value) {
+    if (item.type === "file" && 
+        item.file.type?.startsWith("image/") && 
+        !thumbUrlFor(item, "64") && 
+        !thumbGenerating.value[item.id]) {
+      requestThumbGeneration(item);
+    }
+  }
+}, { immediate: true });
 
 onBeforeUnmount(() => {
   document.removeEventListener("paste", onPaste);
@@ -1074,6 +1191,19 @@ onBeforeUnmount(() => {
           :class="selectedCount > 0 ? 'text-white' : 'text-white/40 cursor-not-allowed'"
           :disabled="selectedCount === 0"
           @click="
+            async () => {
+              closeContextMenu();
+              await downloadSelected();
+            }
+          "
+        >
+          下载选中 ({{ selectedCount }})
+        </button>
+        <button
+          class="w-full text-left px-2.5 py-1.5 text-[13px] hover:bg-white/10 transition-colors"
+          :class="selectedCount > 0 ? 'text-white' : 'text-white/40 cursor-not-allowed'"
+          :disabled="selectedCount === 0"
+          @click="
             () => {
               closeContextMenu();
               clearSelection();
@@ -1251,12 +1381,25 @@ onBeforeUnmount(() => {
                       >
                         <img
                           v-if="
-                            String(it.file.type || '').startsWith('image/') && blobUrlById[it.id]
+                            String(it.file.type || '').startsWith('image/') && thumbUrlFor(it, '64')
                           "
-                          :src="blobUrlById[it.id]"
+                          :src="thumbUrlFor(it, '64')"
                           class="w-full h-full object-cover"
                         />
-                        <span v-else>
+                        <span
+                          v-else-if="thumbGenerating[it.id]"
+                          class="animate-spin text-white/50"
+                        >
+                          ⟳
+                        </span>
+                        <span
+                          v-else
+                          @click.stop="
+                            String(it.file.type || '').startsWith('image/') &&
+                              !thumbUrlFor(it, '64') &&
+                              requestThumbGeneration(it)
+                          "
+                        >
                           {{ String(it.file.type || "").startsWith("image/") ? "🖼️" : "📄" }}
                         </span>
                       </div>
@@ -1307,15 +1450,27 @@ onBeforeUnmount(() => {
                     v-if="
                       it.type === 'file' &&
                       String(it.file.type || '').startsWith('image/') &&
-                      blobUrlById[it.id]
+                      thumbUrlFor(it, '64')
                     "
-                    :src="blobUrlById[it.id]"
+                    :src="thumbUrlFor(it, '64')"
                     class="w-full h-full object-cover"
                   />
+                  <span
+                    v-else-if="it.type === 'file' && thumbGenerating[it.id]"
+                    class="animate-spin text-white/50"
+                  >
+                    ⟳
+                  </span>
                   <span
                     v-else-if="
                       it.type === 'file' && String(it.file.type || '').startsWith('image/')
                     "
+                    @click.stop="
+                      String(it.file.type || '').startsWith('image/') &&
+                        !thumbUrlFor(it, '64') &&
+                        requestThumbGeneration(it)
+                    "
+                    class="cursor-pointer"
                     >🖼️</span
                   >
                   <span v-else>📄</span>
@@ -1369,21 +1524,24 @@ onBeforeUnmount(() => {
               <div class="font-bold text-white">暂无图片</div>
             </div>
 
-            <div v-else class="grid grid-cols-2 md:grid-cols-3 gap-2">
+            <div v-else class="flex flex-wrap gap-2">
               <button
                 v-for="it in items"
                 :key="it.id"
-                class="rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 overflow-hidden aspect-square flex items-center justify-center"
-                @click="openPreview(it)"
+                class="w-16 h-16 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 overflow-hidden flex items-center justify-center"
+                @click="thumbUrlFor(it, '128') ? openPreview(it) : it.type === 'file' && !thumbGenerating[it.id] && requestThumbGeneration(it)"
                 :ref="(el) => observeItem(el, it.id)"
               >
                 <img
-                  v-if="it.type === 'file' && blobUrlById[it.id]"
-                  :src="blobUrlById[it.id]"
+                  v-if="it.type === 'file' && thumbUrlFor(it, '128')"
+                  :src="thumbUrlFor(it, '128')"
                   class="w-full h-full object-cover"
                   :alt="it.file.name"
                 />
-                <div v-else class="text-white/60 text-sm">加载中...</div>
+                <div v-else-if="it.type === 'file' && thumbGenerating[it.id]" class="animate-spin text-white/50 text-xl">
+                  ⟳
+                </div>
+                <div v-else class="text-white/60 text-sm cursor-pointer">🖼️</div>
               </button>
             </div>
           </template>
@@ -1507,9 +1665,9 @@ onBeforeUnmount(() => {
               <img
                 v-if="
                   String(previewItem.file.type || '').startsWith('image/') &&
-                  blobUrlById[previewItem.id]
+                  (blobUrlById[previewItem.id] || previewPlaceholderUrl(previewItem))
                 "
-                :src="blobUrlById[previewItem.id]"
+                :src="blobUrlById[previewItem.id] || previewPlaceholderUrl(previewItem)"
                 class="max-h-[70vh] w-full object-contain rounded-xl bg-white/5 border border-white/10"
                 :alt="previewItem.file.name"
               />

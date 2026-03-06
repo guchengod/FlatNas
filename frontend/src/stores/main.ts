@@ -47,6 +47,7 @@ export const useMainStore = defineStore("main", () => {
   let lastNetworkHeartbeatAt = 0;
   let pendingNetworkMode: string | null = null;
   let isApplyingNetworkMode = false;
+  let isApplyingServerData = false;
 
   socket.on("connect", async () => {
     console.log("Socket connected:", socket.id);
@@ -64,12 +65,22 @@ export const useMainStore = defineStore("main", () => {
     // This handles the case where user switches mode in one tab while another is briefly offline
     const oldMode = systemConfig.value.authMode;
     await fetchSystemConfig();
+
+    // 增加防抖，避免因网络抖动或配置同步延迟导致的频繁刷新
     if (systemConfig.value.authMode !== oldMode) {
-      if (isLogged.value) {
-        logout();
-      } else {
-        init();
-      }
+      console.log(`Auth mode changed from ${oldMode} to ${systemConfig.value.authMode}, re-initializing...`);
+      // 延迟 500ms 再次确认，防止误判
+      setTimeout(async () => {
+        await fetchSystemConfig(); // fetch again to be sure
+        // 只有当再次确认后模式确实改变了，才执行重置操作
+        if (systemConfig.value.authMode !== oldMode) {
+          if (isLogged.value) {
+            logout();
+          } else {
+            init();
+          }
+        }
+      }, 500);
     }
   });
   socket.on("disconnect", () => {
@@ -142,6 +153,7 @@ export const useMainStore = defineStore("main", () => {
   const rssCategories = ref<RssCategory[]>([]);
   const systemConfig = ref({ authMode: "single" }); // Default
   const dataVersion = ref(0);
+  const pendingServerVersion = ref(0);
 
   // Auth State
   const token = ref(localStorage.getItem("flat-nas-token") || "");
@@ -152,7 +164,17 @@ export const useMainStore = defineStore("main", () => {
   const activeMusicPlayer = ref<"mini-player" | "music-widget" | null>(null);
   const webPaginationActiveGroupId = ref("");
   const isLanModeInited = ref(false);
+  const isLanMode = ref(false);
+  const networkLatency = ref(0);
+  const effectiveIsLan = ref(false);
   const ipFetchStatus = ref<"success" | "error" | "loading">("loading");
+  const weatherNetworkStatus = ref<"online" | "degraded" | "offline">("online");
+  const WEATHER_STATUS_CACHE_MS = 10_000;
+  const WEATHER_DEGRADED_HOLD_MS = 15_000;
+  let weatherStatusLastDetectAt = 0;
+  let weatherStatusLastResult: "online" | "degraded" | "offline" = "online";
+  let weatherStatusDetectInFlight: Promise<"online" | "degraded" | "offline"> | null = null;
+  let weatherDegradedUntil = 0;
   const isPageUnloading = ref(false);
   const globalDrag = ref({
     active: false,
@@ -173,6 +195,80 @@ export const useMainStore = defineStore("main", () => {
 
   const isValidNetworkMode = (mode: string) =>
     mode === "auto" || mode === "lan" || mode === "wan" || mode === "latency";
+
+  const detectWeatherNetworkStatus = async (
+    force = false,
+  ): Promise<"online" | "degraded" | "offline"> => {
+    const now = Date.now();
+
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      weatherStatusLastResult = "offline";
+      weatherStatusLastDetectAt = now;
+      weatherNetworkStatus.value = "offline";
+      return "offline";
+    }
+
+    if (!force && weatherDegradedUntil > now) {
+      weatherStatusLastResult = "degraded";
+      weatherNetworkStatus.value = "degraded";
+      return "degraded";
+    }
+
+    if (!force && now - weatherStatusLastDetectAt < WEATHER_STATUS_CACHE_MS) {
+      weatherNetworkStatus.value = weatherStatusLastResult;
+      return weatherStatusLastResult;
+    }
+
+    if (weatherStatusDetectInFlight) {
+      return weatherStatusDetectInFlight;
+    }
+
+    const url = `/api/health?t=${now}`;
+    weatherStatusDetectInFlight = (async () => {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        let next: "online" | "degraded" | "offline";
+
+        if (res.ok || res.status === 404) {
+          next = "online";
+          weatherDegradedUntil = 0;
+        } else {
+          next = "degraded";
+          weatherDegradedUntil = Date.now() + WEATHER_DEGRADED_HOLD_MS;
+        }
+
+        weatherStatusLastResult = next;
+        weatherStatusLastDetectAt = Date.now();
+        weatherNetworkStatus.value = next;
+        return next;
+      } catch {
+        const next: "online" | "degraded" | "offline" = "degraded";
+        weatherDegradedUntil = Date.now() + WEATHER_DEGRADED_HOLD_MS;
+        weatherStatusLastResult = next;
+        weatherStatusLastDetectAt = Date.now();
+        weatherNetworkStatus.value = next;
+        return next;
+      } finally {
+        weatherStatusDetectInFlight = null;
+      }
+    })();
+
+    return weatherStatusDetectInFlight;
+  };
+
+  const bindWeatherNetworkEvents = () => {
+    if (typeof window === "undefined") return;
+    window.addEventListener("online", () => {
+      weatherDegradedUntil = 0;
+      detectWeatherNetworkStatus(true);
+    });
+    window.addEventListener("offline", () => {
+      weatherDegradedUntil = 0;
+      weatherStatusLastResult = "offline";
+      weatherStatusLastDetectAt = Date.now();
+      weatherNetworkStatus.value = "offline";
+    });
+  };
 
   const emitNetworkHeartbeat = () => {
     const t = token.value || localStorage.getItem("flat-nas-token");
@@ -337,7 +433,7 @@ export const useMainStore = defineStore("main", () => {
   };
 
   // Version Check
-  const currentVersion = "1.1.3dev3";
+  const currentVersion = "1.1.3dev4";
   const latestVersion = ref("");
   const dockerUpdateAvailable = ref(false);
   const updateCheckLastAt = useStorage<number>("flat-nas-update-check-last-at", 0);
@@ -407,6 +503,327 @@ export const useMainStore = defineStore("main", () => {
   };
 
   const widgets = ref<WidgetConfig[]>([]);
+  type WidgetUiState = {
+    collapsed?: boolean;
+    editing?: boolean;
+    dragging?: boolean;
+  };
+  type WidgetLayoutSnapshot = {
+    id: string;
+    order: number;
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+    colSpan?: number;
+    rowSpan?: number;
+    layouts?: WidgetConfig["layouts"];
+  };
+  const WIDGET_UI_KEYS = ["collapsed", "editing", "dragging"] as const;
+  const serverLayoutMap = ref<Record<string, WidgetLayoutSnapshot>>({});
+  const uiStateMap = ref<Record<string, WidgetUiState>>({});
+  const serverLayoutSignature = ref("");
+
+  const readWidgetUiState = (widget: WidgetConfig): WidgetUiState => {
+    const source = widget as unknown as Record<string, unknown>;
+    const state: WidgetUiState = {};
+    for (const key of WIDGET_UI_KEYS) {
+      const value = source[key];
+      if (typeof value === "boolean") {
+        state[key] = value;
+      }
+    }
+    return state;
+  };
+
+  const stripWidgetUiState = (widget: WidgetConfig): WidgetConfig => {
+    const clone = { ...widget } as WidgetConfig & Record<string, unknown>;
+    for (const key of WIDGET_UI_KEYS) {
+      delete clone[key];
+    }
+    return clone;
+  };
+
+  const syncUiStateMapFromWidgets = (list: WidgetConfig[]) => {
+    const nextMap: Record<string, WidgetUiState> = { ...uiStateMap.value };
+    for (const widget of list) {
+      const ui = readWidgetUiState(widget);
+      if (Object.keys(ui).length > 0) {
+        nextMap[widget.id] = { ...(nextMap[widget.id] || {}), ...ui };
+      }
+    }
+    uiStateMap.value = nextMap;
+  };
+
+  const applyWidgetUiState = (widget: WidgetConfig): WidgetConfig => {
+    const ui = uiStateMap.value[widget.id];
+    if (!ui) return widget;
+    const raw = widget as unknown as Record<string, unknown>;
+    let changed = false;
+    const next = { ...widget } as WidgetConfig & Record<string, unknown>;
+    for (const key of WIDGET_UI_KEYS) {
+      const value = ui[key];
+      if (typeof value === "boolean" && raw[key] !== value) {
+        next[key] = value;
+        changed = true;
+      }
+    }
+    return changed ? (next as WidgetConfig) : widget;
+  };
+
+  const buildServerLayoutMap = (list: WidgetConfig[]) => {
+    const next: Record<string, WidgetLayoutSnapshot> = {};
+    list.forEach((widget, index) => {
+      next[widget.id] = {
+        id: widget.id,
+        order: index,
+        x: widget.x,
+        y: widget.y,
+        w: widget.w,
+        h: widget.h,
+        colSpan: widget.colSpan,
+        rowSpan: widget.rowSpan,
+        layouts: widget.layouts,
+      };
+    });
+    return next;
+  };
+
+  const buildServerLayoutSignature = (layoutMap: Record<string, WidgetLayoutSnapshot>) => {
+    return JSON.stringify(
+      Object.values(layoutMap)
+        .sort((a, b) => a.order - b.order)
+        .map((item) => ({
+          id: item.id,
+          order: item.order,
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h,
+          colSpan: item.colSpan,
+          rowSpan: item.rowSpan,
+          layouts: item.layouts,
+        })),
+    );
+  };
+
+  const normalizeIncomingWidgets = (input?: WidgetConfig[]) => {
+    const nextWidgets = Array.isArray(input) ? input.map((widget) => ({ ...widget })) : [];
+    if (nextWidgets.length === 0) {
+      return [
+        { id: "w1", type: "clock", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
+        { id: "w2", type: "weather", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
+        { id: "w3", type: "calendar", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
+        { id: "w5", type: "search", enable: true, isPublic: true },
+        { id: "w7", type: "quote", enable: true, isPublic: true },
+        {
+          id: "clockweather",
+          type: "clockweather",
+          enable: true,
+          colSpan: 1,
+          rowSpan: 1,
+          isPublic: true,
+        },
+        { id: "sidebar", type: "sidebar", enable: false, isPublic: true },
+        { id: "docker", type: "docker", enable: false, isPublic: true, colSpan: 1, rowSpan: 1 },
+        {
+          id: "file-transfer",
+          type: "file-transfer",
+          enable: true,
+          colSpan: 2,
+          rowSpan: 2,
+          isPublic: true,
+        },
+        {
+          id: "system-status",
+          type: "system-status",
+          enable: false,
+          isPublic: true,
+          colSpan: 1,
+          rowSpan: 1,
+          data: { useMock: false },
+        },
+        { id: "memo", type: "memo", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
+        { id: "todo", type: "todo", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
+        {
+          id: "calculator",
+          type: "calculator",
+          enable: true,
+          colSpan: 1,
+          rowSpan: 1,
+          isPublic: true,
+        },
+        { id: "ip", type: "ip", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
+        { id: "hot", type: "hot", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
+        { id: "player", type: "player", enable: true, colSpan: 2, rowSpan: 1, isPublic: true },
+        {
+          id: "status-monitor",
+          type: "status-monitor",
+          enable: false,
+          colSpan: 1,
+          rowSpan: 1,
+          isPublic: true,
+        },
+      ] as WidgetConfig[];
+    }
+
+    const memoW = nextWidgets.find((widget) => widget.id === "memo");
+    if (memoW && memoW.type !== "memo") {
+      memoW.type = "memo";
+    }
+
+    let dockerCandidate = nextWidgets.find((widget) => widget.id === "docker");
+    if (!dockerCandidate) {
+      dockerCandidate = nextWidgets.find((widget) => widget.type === "docker");
+    }
+    const listWithoutDocker = nextWidgets.filter((widget) => widget.id !== "docker" && widget.type !== "docker");
+    let finalDockerWidget: WidgetConfig;
+    if (dockerCandidate) {
+      finalDockerWidget = dockerCandidate;
+      finalDockerWidget.id = "docker";
+      finalDockerWidget.type = "docker";
+      if (typeof finalDockerWidget.colSpan !== "number") finalDockerWidget.colSpan = 1;
+      if (typeof finalDockerWidget.rowSpan !== "number") finalDockerWidget.rowSpan = 1;
+      if (typeof finalDockerWidget.enable !== "boolean") finalDockerWidget.enable = false;
+      if (typeof finalDockerWidget.isPublic !== "boolean") finalDockerWidget.isPublic = true;
+    } else {
+      finalDockerWidget = {
+        id: "docker",
+        type: "docker",
+        enable: false,
+        isPublic: true,
+        colSpan: 1,
+        rowSpan: 1,
+      };
+    }
+    listWithoutDocker.push(finalDockerWidget);
+
+    const fileTransferList = listWithoutDocker.filter((widget) => widget.type === "file-transfer");
+    if (fileTransferList.length > 1) {
+      const keep = fileTransferList.find((widget) => widget.id === "file-transfer") || fileTransferList[0]!;
+      const filtered = listWithoutDocker.filter((widget) => widget.type !== "file-transfer" || widget === keep);
+      if (
+        keep.id !== "file-transfer" &&
+        !filtered.some((widget) => widget.id === "file-transfer" && widget.type !== "file-transfer")
+      ) {
+        keep.id = "file-transfer";
+      }
+      nextWidgets.length = 0;
+      nextWidgets.push(...filtered);
+    } else if (
+      fileTransferList.length === 1 &&
+      fileTransferList[0]!.id !== "file-transfer" &&
+      !listWithoutDocker.some((widget) => widget.id === "file-transfer" && widget.type !== "file-transfer")
+    ) {
+      fileTransferList[0]!.id = "file-transfer";
+      nextWidgets.length = 0;
+      nextWidgets.push(...listWithoutDocker);
+    } else if (fileTransferList.length === 0) {
+      listWithoutDocker.push({
+        id: "file-transfer",
+        type: "file-transfer",
+        enable: true,
+        colSpan: 2,
+        rowSpan: 2,
+        isPublic: true,
+      });
+      nextWidgets.length = 0;
+      nextWidgets.push(...listWithoutDocker);
+    } else {
+      nextWidgets.length = 0;
+      nextWidgets.push(...listWithoutDocker);
+    }
+
+    if (!nextWidgets.find((widget) => widget.type === "rss")) {
+      nextWidgets.push({
+        id: "rss-reader",
+        type: "rss",
+        enable: false,
+        colSpan: 1,
+        rowSpan: 2,
+        isPublic: true,
+      });
+    }
+    if (!nextWidgets.find((widget) => widget.type === "sidebar")) {
+      nextWidgets.push({
+        id: "sidebar",
+        type: "sidebar",
+        enable: false,
+        isPublic: true,
+      });
+    }
+    if (!nextWidgets.find((widget) => widget.type === "system-status")) {
+      nextWidgets.push({
+        id: "system-status",
+        type: "system-status",
+        enable: false,
+        isPublic: true,
+        colSpan: 1,
+        rowSpan: 1,
+        data: { useMock: false },
+      });
+    }
+    if (!nextWidgets.find((widget) => widget.type === "status-monitor")) {
+      nextWidgets.push({
+        id: "status-monitor",
+        type: "status-monitor",
+        enable: false,
+        colSpan: 1,
+        rowSpan: 1,
+        isPublic: true,
+      });
+    }
+    return nextWidgets;
+  };
+
+  const applyServerWidgets = (incomingWidgets: WidgetConfig[]) => {
+    syncUiStateMapFromWidgets(widgets.value);
+    const nextServerLayoutMap = buildServerLayoutMap(incomingWidgets);
+    const nextLayoutSignature = buildServerLayoutSignature(nextServerLayoutMap);
+    const previousById = new Map(widgets.value.map((widget) => [widget.id, widget] as const));
+    const nextWidgets = incomingWidgets.map((incomingWidget) => {
+      const previous = previousById.get(incomingWidget.id);
+      const mergedBase = previous ? ({ ...previous, ...incomingWidget } as WidgetConfig) : incomingWidget;
+      return applyWidgetUiState(mergedBase);
+    });
+
+    let changed = nextWidgets.length !== widgets.value.length;
+    if (!changed) {
+      for (let i = 0; i < nextWidgets.length; i++) {
+        const current = widgets.value[i];
+        const next = nextWidgets[i];
+        if (!current || !next || current.id !== next.id || JSON.stringify(current) !== JSON.stringify(next)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (nextLayoutSignature === serverLayoutSignature.value && !changed) {
+      return;
+    }
+
+    serverLayoutMap.value = nextServerLayoutMap;
+    serverLayoutSignature.value = nextLayoutSignature;
+    if (changed) {
+      widgets.value = nextWidgets;
+    }
+  };
+
+  const mergedWidgets = computed(() => widgets.value.map((widget) => applyWidgetUiState(widget)));
+
+  const setWidgetUiState = (widgetId: string, patch: WidgetUiState) => {
+    uiStateMap.value = {
+      ...uiStateMap.value,
+      [widgetId]: { ...(uiStateMap.value[widgetId] || {}), ...patch },
+    };
+    const index = widgets.value.findIndex((widget) => widget.id === widgetId);
+    if (index >= 0) {
+      const nextWidgets = [...widgets.value];
+      nextWidgets[index] = applyWidgetUiState(nextWidgets[index]!);
+      widgets.value = nextWidgets;
+    }
+  };
 
   const appConfig = ref<AppConfig>({
     background: "/default-wallpaper.svg",
@@ -484,6 +901,14 @@ export const useMainStore = defineStore("main", () => {
     customJsDisclaimerAgreed: false,
     mouseHoverEffect: "scale",
     forceNetworkMode: "auto",
+    networkRules: "",
+    networkPresets: {
+      tailscale: false,
+      zerotier: false,
+      frp: false,
+      cloudflareTunnel: false,
+      ngrok: false,
+    },
     latencyThresholdMs: 200,
   });
 
@@ -509,9 +934,12 @@ export const useMainStore = defineStore("main", () => {
   const saveToCache = (data: Record<string, unknown>) => {
     try {
       const nextVersion = normalizeVersion(data.version ?? dataVersion.value);
+      const cacheWidgets = Array.isArray(data.widgets)
+        ? (data.widgets as WidgetConfig[]).map((widget) => stripWidgetUiState(widget))
+        : data.widgets;
       const cacheData = {
         groups: data.groups,
-        widgets: data.widgets,
+        widgets: cacheWidgets,
         appConfig: data.appConfig,
         rssFeeds: data.rssFeeds,
         rssCategories: data.rssCategories,
@@ -539,7 +967,9 @@ export const useMainStore = defineStore("main", () => {
       if (!isMatch) return false;
 
       if (cache.groups) groups.value = cache.groups;
-      if (cache.widgets) widgets.value = cache.widgets;
+      if (cache.widgets) {
+        applyServerWidgets(normalizeIncomingWidgets(cache.widgets as WidgetConfig[]));
+      }
       if (cache.appConfig) appConfig.value = { ...appConfig.value, ...cache.appConfig };
       if (cache.rssFeeds) rssFeeds.value = cache.rssFeeds;
       if (cache.rssCategories) rssCategories.value = cache.rssCategories;
@@ -592,6 +1022,7 @@ export const useMainStore = defineStore("main", () => {
   };
 
   const handleDataUpdate = (data: BackupData) => {
+    isApplyingServerData = true;
     const tStart = performance.now();
     let tUser = tStart;
     // If we got username back, ensure it matches
@@ -618,139 +1049,8 @@ export const useMainStore = defineStore("main", () => {
     ensureDefaultCommonGroup();
     const tGroups = performance.now();
 
-    if (Array.isArray(data.widgets)) {
-      widgets.value = data.widgets;
-
-      // 修复潜在的组件类型错乱问题 (例如备忘录被错误标记为 docker)
-      const memoW = widgets.value.find((w) => w.id === "memo");
-      if (memoW && memoW.type !== "memo") {
-        memoW.type = "memo";
-      }
-
-      // 强健的 Docker 组件修复逻辑
-      // 1. 查找最佳 Docker 组件候选 (优先匹配 ID，其次匹配类型)
-      let dockerCandidate = widgets.value.find((w) => w.id === "docker");
-      if (!dockerCandidate) {
-        dockerCandidate = widgets.value.find((w) => w.type === "docker");
-      }
-
-      // 2. 从列表中移除所有相关的组件 (防止重复或 ID 冲突)
-      widgets.value = widgets.value.filter((w) => w.id !== "docker" && w.type !== "docker");
-
-      // 3. 准备最终的 Docker 组件
-      let finalDockerWidget: WidgetConfig;
-
-      if (dockerCandidate) {
-        // 使用现有组件作为基础，但强制 ID 和类型
-        finalDockerWidget = dockerCandidate;
-        finalDockerWidget.id = "docker";
-        finalDockerWidget.type = "docker";
-        // 确保关键属性存在，防止渲染错误
-        if (typeof finalDockerWidget.colSpan !== "number") finalDockerWidget.colSpan = 1;
-        if (typeof finalDockerWidget.rowSpan !== "number") finalDockerWidget.rowSpan = 1;
-        if (typeof finalDockerWidget.enable !== "boolean") finalDockerWidget.enable = false;
-        if (typeof finalDockerWidget.isPublic !== "boolean") finalDockerWidget.isPublic = true;
-      } else {
-        // 不存在则创建默认的
-        finalDockerWidget = {
-          id: "docker",
-          type: "docker",
-          enable: false,
-          isPublic: true,
-          colSpan: 1,
-          rowSpan: 1,
-        };
-      }
-
-      // 4. 将规范化后的 Docker 组件添加到列表末尾
-      widgets.value.push(finalDockerWidget);
-
-      const fileTransferList = widgets.value.filter((w) => w.type === "file-transfer");
-      if (fileTransferList.length > 1) {
-        const keep = fileTransferList.find((w) => w.id === "file-transfer") || fileTransferList[0]!;
-        widgets.value = widgets.value.filter((w) => w.type !== "file-transfer" || w === keep);
-        if (
-          keep.id !== "file-transfer" &&
-          !widgets.value.some((w) => w.id === "file-transfer" && w.type !== "file-transfer")
-        ) {
-          keep.id = "file-transfer";
-        }
-      } else if (
-        fileTransferList.length === 1 &&
-        fileTransferList[0]!.id !== "file-transfer" &&
-        !widgets.value.some((w) => w.id === "file-transfer" && w.type !== "file-transfer")
-      ) {
-        fileTransferList[0]!.id = "file-transfer";
-      }
-
-      if (!widgets.value.find((w) => w.type === "rss")) {
-        widgets.value.push({
-          id: "rss-reader",
-          type: "rss",
-          enable: false,
-          colSpan: 1,
-          rowSpan: 2,
-          isPublic: true,
-        });
-      }
-      if (!widgets.value.find((w) => w.type === "sidebar")) {
-        widgets.value.push({
-          id: "sidebar",
-          type: "sidebar",
-          enable: false,
-          isPublic: true,
-        });
-      }
-      if (!widgets.value.find((w) => w.type === "status-monitor")) {
-        widgets.value.push({
-          id: "status-monitor",
-          type: "status-monitor",
-          enable: false,
-          colSpan: 1,
-          rowSpan: 1,
-          isPublic: true,
-        });
-      }
-    } else {
-      // Default widgets if empty
-      widgets.value = [
-        { id: "w1", type: "clock", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
-        { id: "w2", type: "weather", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
-        { id: "w3", type: "calendar", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
-        { id: "w5", type: "search", enable: true, isPublic: true },
-        { id: "w7", type: "quote", enable: true, isPublic: true },
-        {
-          id: "clockweather",
-          type: "clockweather",
-          enable: true,
-          colSpan: 1,
-          rowSpan: 1,
-          isPublic: true,
-        },
-        { id: "sidebar", type: "sidebar", enable: false, isPublic: true },
-        { id: "memo", type: "memo", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
-        { id: "todo", type: "todo", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
-        {
-          id: "calculator",
-          type: "calculator",
-          enable: true,
-          colSpan: 1,
-          rowSpan: 1,
-          isPublic: true,
-        },
-        { id: "ip", type: "ip", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
-        { id: "hot", type: "hot", enable: true, colSpan: 1, rowSpan: 1, isPublic: true },
-        { id: "player", type: "player", enable: true, colSpan: 2, rowSpan: 1, isPublic: true },
-        {
-          id: "status-monitor",
-          type: "status-monitor",
-          enable: false,
-          colSpan: 1,
-          rowSpan: 1,
-          isPublic: true,
-        },
-      ];
-    }
+    const normalizedWidgets = normalizeIncomingWidgets(data.widgets);
+    applyServerWidgets(normalizedWidgets);
     const tWidgets = performance.now();
 
     if (data.appConfig) appConfig.value = { ...appConfig.value, ...data.appConfig };
@@ -856,6 +1156,7 @@ export const useMainStore = defineStore("main", () => {
       tailMs: Math.round(tEnd - tRss),
       totalMs: Math.round(tEnd - tStart),
     });
+    isApplyingServerData = false;
   };
 
   const fetchCustomScripts = async () => {
@@ -1022,21 +1323,27 @@ export const useMainStore = defineStore("main", () => {
         socket.on(
           "data-updated",
           async ({ username: updatedUser, version }: { username: string; version?: number }) => {
-            // 如果有正在进行的保存或等待中的保存，则忽略本次更新，以本地状态为准
-            // 避免快速操作时被旧的服务器状态覆盖
+            const isSameUser =
+              updatedUser === username.value ||
+              (username.value === "admin" && updatedUser === "admin");
+            if (!isSameUser) return;
+
+            // 如果有正在进行的保存或等待中的保存，记录服务端最新版本号后返回
+            // 等保存完成后再补同步，避免快速操作时被旧的服务器状态覆盖
             if (saveTimer !== null || isSaving.value) {
+              if (typeof version !== "undefined") {
+                const sv = normalizeVersion(version);
+                if (sv > pendingServerVersion.value) {
+                  pendingServerVersion.value = sv;
+                }
+              }
               return;
             }
 
-            if (
-              updatedUser === username.value ||
-              (username.value === "admin" && updatedUser === "admin")
-            ) {
-              if (typeof version !== "undefined") {
-                dataVersion.value = normalizeVersion(version);
-              }
-              await fetchAndProcessData();
+            if (typeof version !== "undefined") {
+              dataVersion.value = normalizeVersion(version);
             }
+            await fetchAndProcessData();
           },
         );
         socket.on("network:heartbeat", () => {
@@ -1105,7 +1412,7 @@ export const useMainStore = defineStore("main", () => {
 
         const body: Record<string, unknown> = {
           groups: groups.value,
-          widgets: widgets.value,
+          widgets: widgets.value.map((widget) => stripWidgetUiState(widget)),
           appConfig: appConfig.value,
           rssFeeds: rssFeeds.value,
           rssCategories: rssCategories.value,
@@ -1139,21 +1446,49 @@ export const useMainStore = defineStore("main", () => {
           if (body.password) {
             password.value = "";
           }
+          // 如果保存期间其他端有更新，补拉一次服务端数据以合并差异
+          if (pendingServerVersion.value > dataVersion.value) {
+            pendingServerVersion.value = 0;
+            await fetchAndProcessData();
+          } else {
+            pendingServerVersion.value = 0;
+          }
         }
         if (res.status === 409) {
           const result = await res.json().catch(() => null);
           const serverVer = (result as { currentVersion?: number } | null)?.currentVersion;
           if (typeof serverVer !== "undefined") {
             const v = normalizeVersion(serverVer);
+            // 自动采纳服务端版本号后重试一次（当前标签的改动优先）
+            // 若其他端也在同步，它们会通过 data-updated 事件得到最新版本
+            const retryBody = { ...body, version: v };
+            const retryRes = await fetch("/api/save", {
+              method: "POST",
+              headers: getHeaders(),
+              body: JSON.stringify(retryBody),
+            });
+            if (retryRes.ok) {
+              conflictState.value.show = false;
+              const retryResult = await retryRes.json().catch(() => null);
+              if (retryResult && typeof (retryResult as { version?: number }).version !== "undefined") {
+                dataVersion.value = normalizeVersion((retryResult as { version?: number }).version);
+              } else {
+                dataVersion.value = v + 1;
+              }
+              lastSavedJson = JSON.stringify({ ...retryBody, version: dataVersion.value });
+              if (body.password) {
+                password.value = "";
+              }
+              pendingServerVersion.value = 0;
+              return;
+            }
+            // 重试仍然失败（极少情况），才显示冲突弹窗
             conflictState.value = {
               show: true,
               serverVersion: v,
               clientVersion: dataVersion.value,
             };
-            // Optional: update local version to match server if we want to auto-sync next time?
-            // But for ConflictModal, we want to keep them separate.
           }
-          // Do NOT set shouldSyncAfterConflict = true here, let the UI handle it via ConflictModal
           return;
         }
 
@@ -1191,6 +1526,7 @@ export const useMainStore = defineStore("main", () => {
   };
 
   if (typeof window !== "undefined") {
+    bindWeatherNetworkEvents();
     const markUnloading = () => {
       isPageUnloading.value = true;
       if (saveTimer) {
@@ -1463,7 +1799,7 @@ export const useMainStore = defineStore("main", () => {
   watch(
     appConfig,
     () => {
-      if (!isInitializing && !isApplyingNetworkMode) {
+      if (!isInitializing && !isApplyingNetworkMode && !isApplyingServerData) {
         saveData();
       }
     },
@@ -1473,7 +1809,7 @@ export const useMainStore = defineStore("main", () => {
   watch(
     widgets,
     () => {
-      if (!isInitializing) {
+      if (!isInitializing && !isApplyingServerData) {
         saveData();
       }
     },
@@ -1483,7 +1819,7 @@ export const useMainStore = defineStore("main", () => {
   watch(
     rssFeeds,
     () => {
-      if (!isInitializing) {
+      if (!isInitializing && !isApplyingServerData) {
         saveData();
       }
     },
@@ -1493,7 +1829,7 @@ export const useMainStore = defineStore("main", () => {
   watch(
     rssCategories,
     () => {
-      if (!isInitializing) {
+      if (!isInitializing && !isApplyingServerData) {
         saveData();
       }
     },
@@ -1542,6 +1878,7 @@ export const useMainStore = defineStore("main", () => {
     groups,
     items,
     widgets,
+    mergedWidgets,
     appConfig,
     password,
     isLogged,
@@ -1552,7 +1889,12 @@ export const useMainStore = defineStore("main", () => {
     activeMusicPlayer,
     webPaginationActiveGroupId,
     isLanModeInited,
+    isLanMode,
+    networkLatency,
+    effectiveIsLan,
     ipFetchStatus,
+    weatherNetworkStatus,
+    detectWeatherNetworkStatus,
     globalDrag,
     initGlobalDrag,
     rssFeeds,
@@ -1571,6 +1913,7 @@ export const useMainStore = defineStore("main", () => {
     logout,
     changePassword,
     saveWidget,
+    setWidgetUiState,
     saveData,
     cleanInvalidGroups,
     checkUpdate,

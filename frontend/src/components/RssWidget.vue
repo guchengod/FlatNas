@@ -16,8 +16,28 @@ interface RssItem {
   contentSnippet?: string;
 }
 
+interface RssSocketItem {
+  title?: string;
+  link?: string;
+  pubDate?: string;
+  contentSnippet?: string;
+}
+
+interface RssDataPayload {
+  url?: string;
+  data?: {
+    items?: RssSocketItem[];
+  };
+}
+
+interface RssErrorPayload {
+  url?: string;
+  error?: string;
+}
+
 // Backend handles caching (6 hours). Frontend refreshes every 15 minutes.
 const REFRESH_INTERVAL = 15 * 60 * 1000;
+const RSS_FETCH_TIMEOUT_MS = 8000;
 
 const activeFeedId = ref<string>("");
 const list = ref<RssItem[]>([]);
@@ -25,6 +45,7 @@ const loading = ref(false);
 const errorMsg = ref("");
 let activeCleanup: (() => void) | undefined;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let activeRequestId = 0;
 
 // Get enabled feeds
 const enabledFeeds = computed(() => store.rssFeeds.filter((f) => f.enable));
@@ -77,14 +98,13 @@ watch(
 
 const fetchFeed = async (feed: RssFeed) => {
   if (!feed) return;
+  const requestId = ++activeRequestId;
   
-  // Cleanup previous listeners
   if (activeCleanup) {
     activeCleanup();
     activeCleanup = undefined;
   }
 
-  // Clear previous timer if we are switching feeds manually
   if (refreshTimer) {
     clearInterval(refreshTimer);
     refreshTimer = undefined;
@@ -96,59 +116,73 @@ const fetchFeed = async (feed: RssFeed) => {
   // Always set loading true initially, backend is fast if cached
   loading.value = true;
   list.value = [];
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onData = (payload: any) => {
+  const onData = (payload: RssDataPayload) => {
+    if (requestId !== activeRequestId) return;
     if (payload.url === feed.url) {
-      const items = payload.data.items || [];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      list.value = items.map((item: any) => ({
-        title: item.title,
-        link: item.link,
+      const items = Array.isArray(payload.data?.items) ? payload.data.items : [];
+      list.value = items.map((item) => ({
+        title: item.title || "",
+        link: item.link || "#",
         pubDate: item.pubDate,
         contentSnippet: item.contentSnippet,
       }));
+      errorMsg.value = "";
       loading.value = false;
-      
-      if (activeCleanup) {
-        activeCleanup();
-        activeCleanup = undefined;
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = undefined;
       }
     }
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onError = (payload: any) => {
+  const onError = (payload: RssErrorPayload) => {
+    if (requestId !== activeRequestId) return;
     if (payload.url === feed.url) {
       console.error(`Failed to load RSS: ${feed.title}`, payload.error);
       const detail = typeof payload.error === "string" && payload.error.trim() ? payload.error.trim() : "";
       errorMsg.value = detail ? `加载失败：${detail}` : "加载失败";
-      list.value = [];
       loading.value = false;
-      
-      if (activeCleanup) {
-        activeCleanup();
-        activeCleanup = undefined;
+      if (list.value.length === 0) {
+        list.value = [];
+      }
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = undefined;
       }
     }
   };
 
   activeCleanup = () => {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = undefined;
+    }
     store.socket.off("rss:data", onData);
     store.socket.off("rss:error", onError);
   };
 
   store.socket.on("rss:data", onData);
   store.socket.on("rss:error", onError);
-  
-  // Use Socket.IO
+
   const doFetch = () => {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+    }
+    timeoutTimer = setTimeout(() => {
+      if (requestId !== activeRequestId) return;
+      loading.value = false;
+      errorMsg.value = "加载超时，请重试";
+      if (list.value.length === 0) {
+        list.value = [];
+      }
+    }, RSS_FETCH_TIMEOUT_MS);
     store.socket.emit("rss:fetch", { url: feed.url });
   };
 
   doFetch();
-  
-  // Setup 15 min refresh interval
+
   refreshTimer = setInterval(doFetch, REFRESH_INTERVAL);
 };
 

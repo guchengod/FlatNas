@@ -1,12 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
+import type { VueWrapper } from '@vue/test-utils';
 import { createTestingPinia } from '@pinia/testing';
-import { useMainStore } from '../../stores/main';
 import GroupSelector from '../GroupSelector.vue';
 
 describe('GroupSelector', () => {
-  let wrapper: any;
-  let store: any;
+  let wrapper: VueWrapper;
 
   beforeEach(() => {
     wrapper = mount(GroupSelector, {
@@ -29,7 +28,6 @@ describe('GroupSelector', () => {
         ],
       },
     });
-    store = useMainStore();
   });
 
   it('renders correctly with initial group', () => {
@@ -48,27 +46,34 @@ describe('GroupSelector', () => {
 
   it('emits update:modelValue when selecting a group', async () => {
     await wrapper.find('button').trigger('click');
-    
+
     // Find all group buttons inside the dropdown
     // Note: The main button is also a button, so we look inside .absolute
     const dropdown = wrapper.find('.absolute');
     const groupButtons = dropdown.findAll('button');
-    
+
     // Select the second group (Group 2)
-    const group2Button = groupButtons.find((btn: any) => btn.text().includes('Group 2'));
+    const group2Button = groupButtons.find((btn) => btn.text().includes('Group 2'));
+    if (!group2Button) {
+      throw new Error('Group 2 button not found');
+    }
     await group2Button.trigger('click');
-    
-    expect(wrapper.emitted('update:modelValue')).toBeTruthy();
-    expect(wrapper.emitted('update:modelValue')[0]).toEqual(['group-2']);
+
+    const emitted = wrapper.emitted('update:modelValue') ?? [];
+    expect(emitted.length).toBeGreaterThan(0);
+    expect(emitted[0]).toEqual(['group-2']);
   });
 
   it('closes dropdown after selection', async () => {
     await wrapper.find('button').trigger('click');
     const dropdown = wrapper.find('.absolute');
     const groupButtons = dropdown.findAll('button');
-    const group2Button = groupButtons.find((btn: any) => btn.text().includes('Group 2'));
+    const group2Button = groupButtons.find((btn) => btn.text().includes('Group 2'));
+    if (!group2Button) {
+      throw new Error('Group 2 button not found');
+    }
     await group2Button.trigger('click');
-    
+
     expect(wrapper.find('.absolute').exists()).toBe(false);
   });
 });

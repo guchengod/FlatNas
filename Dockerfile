@@ -74,7 +74,8 @@ RUN apk --no-cache add ca-certificates tzdata
 
 # 设置时区和 Gin 模式
 ENV TZ=Asia/Shanghai \
-    GIN_MODE=release
+    GIN_MODE=release \
+    BASE_DIR=/app
 
 # Copy backend binary
 COPY --from=backend-builder /app/backend/flatnas-backend .

@@ -37,8 +37,10 @@ func Init() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Adjust BaseDir if running from backend or frontend directory
-	if filepath.Base(cwd) == "backend" || filepath.Base(cwd) == "frontend" {
+	baseDirFromEnv := strings.TrimSpace(os.Getenv("BASE_DIR"))
+	if baseDirFromEnv != "" {
+		BaseDir = baseDirFromEnv
+	} else if filepath.Base(cwd) == "backend" || filepath.Base(cwd) == "frontend" {
 		BaseDir = filepath.Join(filepath.Dir(cwd), "win")
 	} else if filepath.Base(cwd) == "win" {
 		BaseDir = cwd

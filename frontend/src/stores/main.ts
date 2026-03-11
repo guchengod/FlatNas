@@ -49,6 +49,8 @@ export const useMainStore = defineStore("main", () => {
   let pendingNetworkMode: string | null = null;
   let isApplyingNetworkMode = false;
   let isApplyingServerData = false;
+  const DEFAULT_MARKETPLACE_LIST_URL = "http://qdnas.icu:23111/";
+  const DEV_MARKETPLACE_LIST_URL = "http://localhost:5174/";
 
   socket.on("connect", async () => {
     console.log("Socket connected:", socket.id);
@@ -434,7 +436,7 @@ export const useMainStore = defineStore("main", () => {
   };
 
   // Version Check
-  const currentVersion = "1.1.3dev5";
+  const currentVersion = "1.1.3";
   const latestVersion = ref("");
   const dockerUpdateAvailable = ref(false);
   const updateCheckLastAt = useStorage<number>("flat-nas-update-check-last-at", 0);
@@ -902,7 +904,7 @@ export const useMainStore = defineStore("main", () => {
     customJsDisclaimerAgreed: false,
     mouseHoverEffect: "scale",
     autoUltrawide: false,
-    marketplaceListUrl: "http://localhost:5174/",
+    marketplaceListUrl: DEFAULT_MARKETPLACE_LIST_URL,
     forceNetworkMode: "auto",
     networkRules: "",
     networkPresets: {
@@ -974,6 +976,12 @@ export const useMainStore = defineStore("main", () => {
         applyServerWidgets(normalizeIncomingWidgets(cache.widgets as WidgetConfig[]));
       }
       if (cache.appConfig) appConfig.value = { ...appConfig.value, ...cache.appConfig };
+      if (
+        !appConfig.value.marketplaceListUrl ||
+        appConfig.value.marketplaceListUrl === DEV_MARKETPLACE_LIST_URL
+      ) {
+        appConfig.value.marketplaceListUrl = DEFAULT_MARKETPLACE_LIST_URL;
+      }
       if (cache.rssFeeds) rssFeeds.value = cache.rssFeeds;
       if (cache.rssCategories) rssCategories.value = cache.rssCategories;
       if (cache.systemConfig) systemConfig.value = cache.systemConfig;
@@ -1057,6 +1065,12 @@ export const useMainStore = defineStore("main", () => {
     const tWidgets = performance.now();
 
     if (data.appConfig) appConfig.value = { ...appConfig.value, ...data.appConfig };
+    if (
+      !appConfig.value.marketplaceListUrl ||
+      appConfig.value.marketplaceListUrl === DEV_MARKETPLACE_LIST_URL
+    ) {
+      appConfig.value.marketplaceListUrl = DEFAULT_MARKETPLACE_LIST_URL;
+    }
 
     // Migration for Custom Scripts List
     if (

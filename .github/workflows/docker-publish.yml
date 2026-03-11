@@ -7,14 +7,16 @@ on:
     tags: ["v*.*.*"]
   pull_request:
     branches: ["main", "master"]
+  workflow_dispatch:
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: ${{ github.event_name == 'workflow_dispatch' && 'true' || '' }}
   # Use docker.io for Docker Hub if empty
   REGISTRY: docker.io
   # github.repository as <account>/<repo>
   IMAGE_NAME: qdnas/flatnas
   # 分支构建时使用该值作为 Docker 镜像 tag；打 Git Tag 时不使用
-  VERSION: 1.1.3dev4
+  VERSION: 1.1.3
 
 jobs:
   build:
@@ -57,7 +59,7 @@ jobs:
           tags: |
             type=ref,event=tag
             type=raw,value=${{ env.VERSION }},enable=${{ github.ref_type == 'branch' }}
-          # type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
           # 添加 latest 标签：通过 metadata-action 追加 raw 标签，非 PR 触发时生效
             
 

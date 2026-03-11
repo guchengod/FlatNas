@@ -7,6 +7,9 @@ on:
       - "V*"
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: ${{ github.event_name == 'workflow_dispatch' && 'true' || '' }}
+
 permissions:
   contents: write
   packages: write
@@ -37,7 +40,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22.12.0"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 

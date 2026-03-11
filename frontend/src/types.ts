@@ -33,17 +33,17 @@ export interface NavGroup {
   preset?: boolean;
   cardLayout?: "vertical" | "horizontal" | string;
   iconShape?:
-    | "circle"
-    | "rounded"
-    | "leaf"
-    | "square"
-    | "diamond"
-    | "pentagon"
-    | "hexagon"
-    | "octagon"
-    | "none"
-    | "hidden"
-    | string;
+  | "circle"
+  | "rounded"
+  | "leaf"
+  | "square"
+  | "diamond"
+  | "pentagon"
+  | "hexagon"
+  | "octagon"
+  | "none"
+  | "hidden"
+  | string;
   cardBgColor?: string;
   cardTitleColor?: string;
   cardTitleSize?: number;
@@ -133,17 +133,17 @@ export interface AppConfig {
   cardBorderColor: string;
   showCardBackground: boolean;
   iconShape:
-    | "circle"
-    | "rounded"
-    | "leaf"
-    | "square"
-    | "diamond"
-    | "pentagon"
-    | "hexagon"
-    | "octagon"
-    | "none"
-    | "hidden"
-    | string;
+  | "circle"
+  | "rounded"
+  | "leaf"
+  | "square"
+  | "diamond"
+  | "pentagon"
+  | "hexagon"
+  | "octagon"
+  | "none"
+  | "hidden"
+  | string;
   searchEngines: SearchEngine[];
   defaultSearchEngine: string;
   rememberLastEngine: boolean;
@@ -186,6 +186,18 @@ export interface AppConfig {
   mouseHoverEffect?: "scale" | "lift" | "glow" | "none" | string;
   autoUltrawide?: boolean;
   hideHeaderOnMobile?: boolean;
+  marketplaceListUrl?: string;
+}
+
+export interface MarketplaceItem {
+  id: string;
+  name: string;
+  description?: string;
+  type: "css" | "js" | "component" | "css+js" | "js+component" | "css+component" | "css+js+component";
+  css?: string;
+  js?: string;
+  component?: { title: string; html: string; css: string };
+  useProxy?: boolean;
 }
 
 export interface WidgetConfig {

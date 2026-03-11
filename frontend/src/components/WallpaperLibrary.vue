@@ -50,7 +50,7 @@ const fetchWallpapers = async () => {
     if (res.ok) {
       const list = await res.json();
       // Ensure default wallpaper is always available and unique
-      const cleanList = list.filter((f: string) => f !== DEFAULT_WALLPAPER);
+      const cleanList = Array.isArray(list) ? list.filter((f: string) => f !== DEFAULT_WALLPAPER) : [];
 
       // Apply saved sort order if available
       const savedOrder = store.appConfig.pcWallpaperOrder || [];
@@ -81,7 +81,7 @@ const fetchWallpapers = async () => {
     const resMobile = await fetch(mobileListEndpoint.value, { headers });
     if (resMobile.ok) {
       const list = await resMobile.json();
-      const cleanList = list.filter((f: string) => f !== DEFAULT_WALLPAPER);
+      const cleanList = Array.isArray(list) ? list.filter((f: string) => f !== DEFAULT_WALLPAPER) : [];
 
       // Apply saved sort order
       const savedOrder = store.appConfig.mobileWallpaperOrder || [];

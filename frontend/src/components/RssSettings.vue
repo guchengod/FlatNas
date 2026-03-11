@@ -381,48 +381,28 @@ const addTagToForm = (tag: string) => {
         <div
           v-for="feed in store.rssFeeds"
           :key="feed.id"
-          class="p-3 border border-gray-100 rounded-lg bg-white hover:shadow-md transition-all group"
+          class="p-3 border border-gray-100 rounded-lg bg-white hover:shadow-md transition-all group flex items-center gap-3"
         >
-          <div class="flex items-start justify-between mb-1">
+          <div
+            class="w-8 h-8 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center font-bold text-base shrink-0"
+          >
+            {{ feed.title.substring(0, 1) }}
+          </div>
+          <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2">
-              <div
-                class="w-8 h-8 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center font-bold text-base"
+              <span class="font-bold text-gray-800 text-sm truncate">{{ feed.title }}</span>
+              <span
+                v-if="feed.category"
+                class="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded shrink-0"
+                >{{ feed.category }}</span
               >
-                {{ feed.title.substring(0, 1) }}
-              </div>
-              <div>
-                <div class="font-bold text-gray-800 text-sm">{{ feed.title }}</div>
-                <div class="text-[10px] text-gray-400 max-w-[200px] truncate">
-                  {{ feed.url }}
-                </div>
-              </div>
             </div>
-            <div
-              class="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity"
-            >
-              <button
-                @click="editRss(feed)"
-                class="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg"
-                title="编辑"
-              >
-                ✏️
-              </button>
-              <button
-                @click="deleteRss(feed.id)"
-                class="p-1.5 text-red-500 hover:bg-red-50 rounded-lg"
-                title="删除"
-              >
-                🗑️
-              </button>
+            <div class="text-[10px] text-gray-400 truncate" :title="feed.url">
+              {{ feed.url }}
             </div>
           </div>
-          <div class="flex items-center gap-2 mt-2">
-            <span
-              v-if="feed.category"
-              class="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded"
-              >{{ feed.category }}</span
-            >
-            <div class="flex-1"></div>
+
+          <div class="flex items-center gap-2 shrink-0">
             <span
               :class="feed.enable ? 'text-green-500' : 'text-gray-300'"
               class="text-xs font-bold"
@@ -434,6 +414,25 @@ const addTagToForm = (tag: string) => {
               class="text-xs font-bold"
               >{{ feed.isPublic ? "公开" : "私有" }}</span
             >
+          </div>
+
+          <div
+            class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+          >
+            <button
+              @click="editRss(feed)"
+              class="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg"
+              title="编辑"
+            >
+              ✏️
+            </button>
+            <button
+              @click="deleteRss(feed.id)"
+              class="p-1.5 text-red-500 hover:bg-red-50 rounded-lg"
+              title="删除"
+            >
+              🗑️
+            </button>
           </div>
         </div>
       </div>

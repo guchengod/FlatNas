@@ -134,6 +134,29 @@ export function useMemoPersistence(
         } else {
           reportError(new Error('Data corruption detected on load'), 'MemoPersistenceLoad');
         }
+      } else {
+        // Fallback migration: import legacy LocalStorage cache if present
+        const legacyKey = `flatnas-memo-backup-${widgetId}`;
+        const legacyValue = localStorage.getItem(legacyKey);
+        if (legacyValue && legacyValue.length > 0) {
+          // Heuristic: if contains HTML tags, treat as rich
+          const importMode: 'simple' | 'rich' = /<[^>]+>/.test(legacyValue) ? 'rich' : 'simple';
+          localData.value = legacyValue;
+          mode.value = importMode;
+          // Persist into IndexedDB immediately
+          const checksum = generateChecksum(legacyValue);
+          const imported: MemoData = {
+            id: widgetId,
+            content: legacyValue,
+            mode: importMode,
+            updatedAt: Date.now(),
+            checksum,
+          };
+          await db.put(STORE_NAME, imported);
+          lastVersionChecksum.set(widgetId, checksum);
+          // Clean up legacy key to avoid confusion
+          try { localStorage.removeItem(legacyKey); } catch {}
+        }
       }
     } catch (e) {
       reportError(e, 'MemoPersistenceLoad');

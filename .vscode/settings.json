@@ -17,5 +17,13 @@
   ],
   "go.workspaces": [
     "backend"
+  ],
+  "json.schemas": [
+    {
+      "fileMatch": [
+        "package.json"
+      ],
+      "url": "file:///d:/FlatNas(Go)/.vscode/schemas/package.schema.json"
+    }
   ]
 }

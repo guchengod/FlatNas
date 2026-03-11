@@ -16,13 +16,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sort"
+
 	"github.com/gin-gonic/gin"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
-	"sort"
 )
 
 type NetworkStat struct {
@@ -32,16 +33,44 @@ type NetworkStat struct {
 }
 
 var (
-	lastNetStats       []net.IOCountersStat
-	lastNetTime        time.Time
+	lastNetStats        []net.IOCountersStat
+	lastNetTime         time.Time
 	lastCalculatedRates []NetworkStat
-	netMutex           sync.Mutex
+	netMutex            sync.Mutex
+
+	lastCPUTimes []cpu.TimesStat
+	lastCPUTime  time.Time
+	cpuMutex     sync.Mutex
 )
+
+func calculateTotalTime(t cpu.TimesStat) float64 {
+	return t.User + t.System + t.Idle + t.Nice + t.Iowait + t.Irq + t.Softirq + t.Steal + t.Guest + t.GuestNice
+}
 
 func GetSystemStats(c *gin.Context) {
 	v, _ := mem.VirtualMemory()
 	cStats, _ := cpu.Info()
-	percent, _ := cpu.Percent(0, false)
+
+	// CPU Stats Calculation
+	currentTimes, _ := cpu.Times(false)
+	var currentLoad, currentLoadUser, currentLoadSystem float64
+
+	cpuMutex.Lock()
+	if len(currentTimes) > 0 {
+		now := time.Now()
+		// Only calculate if we have previous stats
+		if !lastCPUTime.IsZero() && len(lastCPUTimes) > 0 {
+			deltaTotal := calculateTotalTime(currentTimes[0]) - calculateTotalTime(lastCPUTimes[0])
+			if deltaTotal > 0 {
+				currentLoadUser = (currentTimes[0].User - lastCPUTimes[0].User) / deltaTotal * 100
+				currentLoadSystem = (currentTimes[0].System - lastCPUTimes[0].System) / deltaTotal * 100
+				currentLoad = 100 - ((currentTimes[0].Idle - lastCPUTimes[0].Idle) / deltaTotal * 100)
+			}
+		}
+		lastCPUTimes = currentTimes
+		lastCPUTime = now
+	}
+	cpuMutex.Unlock()
 
 	// Use the volume of BaseDir
 	volume := filepath.VolumeName(config.BaseDir)
@@ -51,16 +80,16 @@ func GetSystemStats(c *gin.Context) {
 		volume = volume + "\\"
 	}
 	d, _ := disk.Usage(volume)
-	
+
 	// Network Stats Calculation
 	currentNet, _ := net.IOCounters(true)
 	now := time.Now()
-	
+
 	netMutex.Lock()
 	var networkStats []NetworkStat
-	
+
 	duration := now.Sub(lastNetTime).Seconds()
-	
+
 	if lastNetTime.IsZero() || duration < 1.0 {
 		// If first run or requests too close, return last calculated (or empty/zero for first run)
 		if lastCalculatedRates == nil {
@@ -84,39 +113,39 @@ func GetSystemStats(c *gin.Context) {
 		for _, n := range currentNet {
 			currMap[n.Name] = n
 		}
-		
+
 		lastMap := make(map[string]net.IOCountersStat)
 		for _, n := range lastNetStats {
 			lastMap[n.Name] = n
 		}
-		
+
 		for _, curr := range currentNet {
 			rxSec := uint64(0)
 			txSec := uint64(0)
-			
+
 			if last, ok := lastMap[curr.Name]; ok {
 				if curr.BytesRecv >= last.BytesRecv {
-					rxSec = uint64(float64(curr.BytesRecv - last.BytesRecv) / duration)
+					rxSec = uint64(float64(curr.BytesRecv-last.BytesRecv) / duration)
 				}
 				if curr.BytesSent >= last.BytesSent {
-					txSec = uint64(float64(curr.BytesSent - last.BytesSent) / duration)
+					txSec = uint64(float64(curr.BytesSent-last.BytesSent) / duration)
 				}
 			}
-			
+
 			networkStats = append(networkStats, NetworkStat{
 				Iface: curr.Name,
 				RxSec: rxSec,
 				TxSec: txSec,
 			})
 		}
-		
+
 		// Update state
 		lastNetStats = currentNet
 		lastNetTime = now
 		lastCalculatedRates = networkStats
 	}
 	netMutex.Unlock()
-	
+
 	// Sort by interface name for consistency
 	sort.Slice(networkStats, func(i, j int) bool {
 		return networkStats[i].Iface < networkStats[j].Iface
@@ -124,24 +153,24 @@ func GetSystemStats(c *gin.Context) {
 
 	h, _ := host.Info()
 
-	cpuLoad := 0.0
-	if len(percent) > 0 {
-		cpuLoad = percent[0]
-	}
-
 	brand := "Unknown"
+	manufacturer := "Unknown"
 	speed := 0.0
 	if len(cStats) > 0 {
 		brand = cStats[0].ModelName
+		manufacturer = cStats[0].VendorID
 		speed = cStats[0].Mhz / 1000.0
 	}
 
 	data := gin.H{
 		"cpu": gin.H{
-			"currentLoad": cpuLoad,
-			"cores":       runtime.NumCPU(),
-			"brand":       brand,
-			"speed":       speed,
+			"currentLoad":       currentLoad,
+			"currentLoadUser":   currentLoadUser,
+			"currentLoadSystem": currentLoadSystem,
+			"cores":             runtime.NumCPU(),
+			"brand":             brand,
+			"manufacturer":      manufacturer,
+			"speed":             speed,
 		},
 		"mem": gin.H{
 			"total":     v.Total,

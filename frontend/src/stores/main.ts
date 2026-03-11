@@ -7,6 +7,7 @@ import type {
   NavGroup,
   AppConfig,
   WidgetConfig,
+  MarketplaceItem,
   RssFeed,
   RssCategory,
   LuckyStunData,
@@ -433,7 +434,7 @@ export const useMainStore = defineStore("main", () => {
   };
 
   // Version Check
-  const currentVersion = "1.1.3dev4";
+  const currentVersion = "1.1.3dev5";
   const latestVersion = ref("");
   const dockerUpdateAvailable = ref(false);
   const updateCheckLastAt = useStorage<number>("flat-nas-update-check-last-at", 0);
@@ -900,6 +901,8 @@ export const useMainStore = defineStore("main", () => {
     customJsList: [],
     customJsDisclaimerAgreed: false,
     mouseHoverEffect: "scale",
+    autoUltrawide: false,
+    marketplaceListUrl: "http://localhost:5174/",
     forceNetworkMode: "auto",
     networkRules: "",
     networkPresets: {
@@ -1145,6 +1148,13 @@ export const useMainStore = defineStore("main", () => {
     fetchCustomScripts();
 
     checkUpdate();
+    // Initial snapshot load should also reset dirty state
+    const currentLayoutMap = buildServerLayoutMap(widgets.value);
+    lastSavedLayoutSignature.value = buildServerLayoutSignature(currentLayoutMap);
+    // 更新快照
+    lastSavedLayoutSnapshot.value = JSON.parse(JSON.stringify(currentLayoutMap));
+    layoutDirty.value = false;
+
     saveToCache(data);
     const tEnd = performance.now();
     console.log("handleDataUpdate timing", {
@@ -1194,7 +1204,30 @@ export const useMainStore = defineStore("main", () => {
         return;
       }
 
+      // 布局保护：如果本地有未保存的布局修改，提示用户
+      // 注意：这里我们简单处理，如果有未保存布局，则提示用户是否覆盖
+      // 实际场景中，可能需要更复杂的合并策略，但目前“提示覆盖”是比较安全的做法
+      // 我们只在 layoutDirty 为 true 时提示。
+      if (layoutDirty.value) {
+        if (!confirm("检测到云端数据更新，但您当前有未保存的布局修改。\n是否放弃本地修改并使用云端版本覆盖？\n(取消则保留本地修改，但可能导致版本冲突)")) {
+          // 用户选择保留本地，我们不应用云端数据，但更新 pendingServerVersion 以便下次有机会再同步
+          // 或者也可以直接返回，不做任何事，等待用户手动保存触发冲突解决流程
+          // 这里我们选择只更新版本号（如果在 data-updated 中），但这里是全量 fetch，
+          // data 中包含了 version。
+          // 如果我们不 apply，那么本地数据版本会落后。
+          // 当用户下次保存时，会触发 409，进入冲突流程。
+          return;
+        }
+      }
+
       handleDataUpdate(data);
+      // 更新 lastSavedLayoutSignature，因为现在是与服务端一致了
+      const currentLayoutMap = buildServerLayoutMap(widgets.value);
+      lastSavedLayoutSignature.value = buildServerLayoutSignature(currentLayoutMap);
+      // 更新快照
+      lastSavedLayoutSnapshot.value = JSON.parse(JSON.stringify(currentLayoutMap));
+      layoutDirty.value = false;
+
       if (!hasServerSnapshot.value) {
         saveToCache(data);
         markServerSnapshotReady();
@@ -1239,8 +1272,16 @@ export const useMainStore = defineStore("main", () => {
       localStorage.setItem("flat-nas-username", data.username);
     }
 
+    // Initial load from server snapshot
     const handleStart = performance.now();
     handleDataUpdate(data);
+    // Reset dirty state
+    const currentLayoutMap = buildServerLayoutMap(widgets.value);
+    lastSavedLayoutSignature.value = buildServerLayoutSignature(currentLayoutMap);
+    // 更新快照
+    lastSavedLayoutSnapshot.value = JSON.parse(JSON.stringify(currentLayoutMap));
+    layoutDirty.value = false;
+
     const handleMs = performance.now() - handleStart;
     saveToCache(data);
     markServerSnapshotReady();
@@ -1312,14 +1353,41 @@ export const useMainStore = defineStore("main", () => {
     } finally {
       isInitializing = false;
       if (!socketListenersBound) {
-        socket.on("memo:updated", ({ widgetId, content }: { widgetId: string; content: WidgetConfig["data"] }) => {
-          const w = widgets.value.find((x) => x.id === widgetId);
-          if (w) w.data = content;
-        });
-        socket.on("todo:updated", ({ widgetId, content }: { widgetId: string; content: WidgetConfig["data"] }) => {
-          const w = widgets.value.find((x) => x.id === widgetId);
-          if (w) w.data = content;
-        });
+        let serverApplyDepth = 0;
+        const withServerApply = (fn: () => void) => {
+          serverApplyDepth++;
+          isApplyingServerData = true;
+          try {
+            fn();
+          } finally {
+            Promise.resolve().then(() => {
+              serverApplyDepth--;
+              if (serverApplyDepth <= 0) {
+                serverApplyDepth = 0;
+                isApplyingServerData = false;
+              }
+            });
+          }
+        };
+
+        socket.on(
+          "memo:updated",
+          ({ widgetId, content }: { widgetId: string; content: WidgetConfig["data"] }) => {
+            withServerApply(() => {
+              const w = widgets.value.find((x) => x.id === widgetId);
+              if (w) w.data = content;
+            });
+          },
+        );
+        socket.on(
+          "todo:updated",
+          ({ widgetId, content }: { widgetId: string; content: WidgetConfig["data"] }) => {
+            withServerApply(() => {
+              const w = widgets.value.find((x) => x.id === widgetId);
+              if (w) w.data = content;
+            });
+          },
+        );
         socket.on(
           "data-updated",
           async ({ username: updatedUser, version }: { username: string; version?: number }) => {
@@ -1376,7 +1444,11 @@ export const useMainStore = defineStore("main", () => {
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   const isSaving = ref(false);
+  // 记录是否有等待中的保存请求（在 isSaving 期间又触发了保存）
+  const hasPendingSave = ref(false);
   let lastSavedJson = "";
+  // 记录上次成功保存的布局签名，用于判断 layoutDirty
+  const lastSavedLayoutSignature = ref("");
 
   const conflictState = ref({
     show: false,
@@ -1384,13 +1456,50 @@ export const useMainStore = defineStore("main", () => {
     clientVersion: 0,
   });
 
+  const layoutDirty = ref(false);
+  // 内存中的上一次布局快照，用于撤销
+  // 改名：lastSavedLayoutSnapshot，明确语义为“上次成功保存的快照”
+  const lastSavedLayoutSnapshot = ref<Record<string, WidgetLayoutSnapshot> | null>(null);
+
+  // 在保存成功时，我们更新了 lastSavedLayoutSignature。
+  // 我们需要监听 widgets 的变化来更新 layoutDirty。
+  // 但 widgets 是 deep reactive 的，任何变化都会触发。
+  // 我们只关心布局相关的变化：id, order, x, y, w, h, colSpan, rowSpan, layouts。
+  // buildServerLayoutSignature 已经只包含这些字段了。
+
+  const checkLayoutDirty = () => {
+    const currentLayoutMap = buildServerLayoutMap(widgets.value);
+    const currentSig = buildServerLayoutSignature(currentLayoutMap);
+    layoutDirty.value = currentSig !== lastSavedLayoutSignature.value;
+  };
+
+  // 监听 widgets 变化，防抖更新 dirty 状态
+  // 注意：saveData 内部也会触发 widgets 变化（例如 stripWidgetUiState 可能不会，但如果有其他逻辑），
+  // 但最重要的是，saveData 成功后会更新 lastSavedLayoutSignature，
+  // 此时 checkLayoutDirty 应该会算出 false。
+  watch(
+    widgets,
+    () => {
+      checkLayoutDirty();
+    },
+    { deep: true }
+  );
+
   const saveData = async (immediate = false, force = false) => {
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
     }
 
+    // 移除：不要在 saveData 开始时更新快照，因为此时 widgets 已经是脏数据了！
+    // 应该在保存成功后更新快照。
+
     const doSave = async () => {
+      // 冲突状态下，除非强制保存，否则不执行任何保存
+      if (conflictState.value.show && !force) {
+        return;
+      }
+
       const shouldSyncAfterConflict = false;
       if (isPageUnloading.value) {
         return;
@@ -1399,7 +1508,17 @@ export const useMainStore = defineStore("main", () => {
         deferredSaveRequested.value = true;
         return;
       }
+
+      // 如果正在保存，则标记为有待保存请求，然后返回
+      if (isSaving.value) {
+        hasPendingSave.value = true;
+        return;
+      }
+
       isSaving.value = true;
+      // 清除 pending 标记，因为我们正在处理它（或最新的一个）
+      hasPendingSave.value = false;
+
       try {
         if (!isLogged.value) {
           return;
@@ -1430,11 +1549,14 @@ export const useMainStore = defineStore("main", () => {
         // Optimistic cache save to ensure data persistence even if network fails
         saveToCache(body);
 
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 15000);
         const res = await fetch("/api/save", {
           method: "POST",
           headers: getHeaders(),
           body: json,
-        });
+          signal: controller.signal,
+        }).finally(() => window.clearTimeout(timeout));
 
         if (res.ok) {
           conflictState.value.show = false;
@@ -1443,6 +1565,13 @@ export const useMainStore = defineStore("main", () => {
             dataVersion.value = normalizeVersion((result as { version?: number }).version);
           }
           lastSavedJson = JSON.stringify({ ...body, version: dataVersion.value });
+          // 更新上次成功保存的布局签名
+          const currentLayoutMap = buildServerLayoutMap(widgets.value);
+          lastSavedLayoutSignature.value = buildServerLayoutSignature(currentLayoutMap);
+          // 更新快照，这是干净的、已保存的状态
+          lastSavedLayoutSnapshot.value = JSON.parse(JSON.stringify(currentLayoutMap));
+          layoutDirty.value = false;
+
           if (body.password) {
             password.value = "";
           }
@@ -1459,14 +1588,24 @@ export const useMainStore = defineStore("main", () => {
           const serverVer = (result as { currentVersion?: number } | null)?.currentVersion;
           if (typeof serverVer !== "undefined") {
             const v = normalizeVersion(serverVer);
-            // 自动采纳服务端版本号后重试一次（当前标签的改动优先）
+
+            // 策略调整：如果冲突 UI 已显示，则不再自动重试，直接让用户决定
+            if (conflictState.value.show) {
+              // 维持冲突状态，不做任何事，等待用户操作
+              return;
+            }
+
+            // 第一次遇到 409，尝试自动采纳服务端版本号后重试一次（当前标签的改动优先）
             // 若其他端也在同步，它们会通过 data-updated 事件得到最新版本
             const retryBody = { ...body, version: v };
+            const retryController = new AbortController();
+            const retryTimeout = window.setTimeout(() => retryController.abort(), 15000);
             const retryRes = await fetch("/api/save", {
               method: "POST",
               headers: getHeaders(),
               body: JSON.stringify(retryBody),
-            });
+              signal: retryController.signal,
+            }).finally(() => window.clearTimeout(retryTimeout));
             if (retryRes.ok) {
               conflictState.value.show = false;
               const retryResult = await retryRes.json().catch(() => null);
@@ -1476,6 +1615,13 @@ export const useMainStore = defineStore("main", () => {
                 dataVersion.value = v + 1;
               }
               lastSavedJson = JSON.stringify({ ...retryBody, version: dataVersion.value });
+              // 更新上次成功保存的布局签名
+              const currentLayoutMap = buildServerLayoutMap(widgets.value);
+              lastSavedLayoutSignature.value = buildServerLayoutSignature(currentLayoutMap);
+              // 更新快照
+              lastSavedLayoutSnapshot.value = JSON.parse(JSON.stringify(currentLayoutMap));
+              layoutDirty.value = false;
+
               if (body.password) {
                 password.value = "";
               }
@@ -1511,6 +1657,12 @@ export const useMainStore = defineStore("main", () => {
         isSaving.value = false;
         if (shouldSyncAfterConflict) {
           await fetchAndProcessData();
+        }
+
+        // 如果在保存期间有新的保存请求，立即再次触发保存
+        if (hasPendingSave.value) {
+          // 重新调用 doSave
+          doSave();
         }
       }
     };
@@ -1874,6 +2026,99 @@ export const useMainStore = defineStore("main", () => {
     }
   };
 
+  const applyMarketplaceItem = (item: MarketplaceItem) => {
+    let changed = false;
+
+    // 1. CSS
+    if (item.css) {
+      if (!appConfig.value.customCssList) appConfig.value.customCssList = [];
+      const newId = item.id ? `css-${item.id}` : `css-${Date.now()}`;
+      // Check for duplicates? Maybe not, just append.
+      appConfig.value.customCssList.push({
+        id: newId,
+        name: item.name || "Unknown CSS",
+        content: item.css,
+        enable: true,
+        useProxy: item.useProxy ?? false,
+      });
+      changed = true;
+    }
+
+    // 2. JS
+    if (item.js) {
+      if (!appConfig.value.customJsList) appConfig.value.customJsList = [];
+      const newId = item.id ? `js-${item.id}` : `js-${Date.now()}`;
+      appConfig.value.customJsList.push({
+        id: newId,
+        name: item.name || "Unknown JS",
+        content: item.js,
+        enable: true,
+        useProxy: item.useProxy ?? false,
+      });
+      changed = true;
+    }
+
+    // 3. Component
+    if (item.component) {
+      const newId = "custom-css-" + Date.now();
+      widgets.value.push({
+        id: newId,
+        type: "custom-css",
+        enable: true,
+        data: item.component,
+        colSpan: 1,
+        rowSpan: 1,
+        isPublic: true,
+      });
+      changed = true;
+    }
+
+    if (changed) {
+      updateCustomScripts();
+    }
+  };
+
+  const resolveConflict = async (action: "remote" | "local") => {
+    if (action === "remote") {
+      // 采用服务端：只拉取最新数据，不执行保存
+      await fetchAndProcessData();
+      conflictState.value.show = false;
+    } else {
+      // 强制本端：执行强制保存
+      await saveData(true, true);
+      // saveData 成功后会关闭 conflictState
+    }
+  };
+
+  const undoLayout = async () => {
+    if (!lastSavedLayoutSnapshot.value) return;
+
+    // 应用快照
+    const layoutMap = lastSavedLayoutSnapshot.value;
+
+    // 我们需要恢复的不仅仅是位置，还有可能被删除的组件（如果快照里有）
+    // 但目前的逻辑主要针对位置和尺寸。
+    // 如果组件被删除了，快照里有，但 widgets 里没有，这里可能无法完全恢复（因为缺少 data）。
+    // 这里做简单回滚：只针对还在 widgets 里的组件恢复位置。
+    // 如果要支持恢复删除，需要更复杂的快照。
+
+    widgets.value.forEach(widget => {
+      const snapshot = layoutMap[widget.id];
+      if (snapshot) {
+        widget.x = snapshot.x;
+        widget.y = snapshot.y;
+        widget.w = snapshot.w;
+        widget.h = snapshot.h;
+        widget.colSpan = snapshot.colSpan;
+        widget.rowSpan = snapshot.rowSpan;
+        widget.layouts = snapshot.layouts;
+      }
+    });
+
+    // 强制保存
+    await saveData(true, true);
+  };
+
   return {
     groups,
     items,
@@ -1935,8 +2180,15 @@ export const useMainStore = defineStore("main", () => {
     refreshResources,
     resourceVersion,
     updateCustomScripts,
+    applyMarketplaceItem,
     isServerSnapshotReady,
     isClientReady,
     conflictState,
+    isSaving,
+    hasPendingSave,
+    lastSavedLayoutSignature,
+    layoutDirty,
+    resolveConflict,
+    undoLayout,
   };
 });

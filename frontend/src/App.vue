@@ -345,6 +345,56 @@ onMounted(() => {
 <template>
   <div class="flatnas-handshake-signal" style="display: none !important"></div>
   <GridPanel />
+
+  <!-- 保存中提示 -->
+  <Transition name="fade-up">
+    <div
+      v-if="store.isSaving"
+      class="fixed bottom-6 right-6 z-[100] px-4 py-2 bg-black/80 text-white text-xs font-medium rounded-full shadow-lg backdrop-blur-sm border border-white/10 flex items-center gap-2"
+    >
+      <div class="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+      <span>正在保存...</span>
+    </div>
+  </Transition>
+
+  <!-- 冲突提示条 -->
+  <Transition name="slide-down">
+    <div
+      v-if="store.conflictState.show"
+      class="fixed top-0 inset-x-0 z-[110] bg-red-500/95 text-white shadow-xl backdrop-blur-md border-b border-red-400/50"
+    >
+      <div class="max-w-7xl mx-auto px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <div class="p-2 bg-white/20 rounded-full shrink-0">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <div>
+            <h3 class="font-bold text-sm">版本冲突 (Version Conflict)</h3>
+            <p class="text-xs text-white/90">
+              其他设备或标签页已更新配置（服务端 v{{ store.conflictState.serverVersion }}，本地 v{{ store.conflictState.clientVersion }}）。
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            @click="store.resolveConflict('remote')"
+            class="flex-1 sm:flex-none px-4 py-2 bg-white/10 hover:bg-white/20 text-xs font-bold rounded-lg transition-colors border border-white/10"
+          >
+            采用服务端 (放弃本地)
+          </button>
+          <button
+            @click="store.resolveConflict('local')"
+            class="flex-1 sm:flex-none px-4 py-2 bg-white text-red-600 text-xs font-bold rounded-lg hover:bg-red-50 transition-colors shadow-sm"
+          >
+            强制本端 (覆盖服务端)
+          </button>
+        </div>
+      </div>
+    </div>
+  </Transition>
+
   <div
     v-if="!store.isClientReady"
     class="fixed inset-0 z-[120] bg-black/30 backdrop-blur-[2px] flex items-center justify-center text-white"

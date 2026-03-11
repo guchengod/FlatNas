@@ -35,7 +35,10 @@ const editorRef = ref<InstanceType<typeof MemoEditor> | null>(null);
 const isEditing = ref(false);
 const isSaving = ref(false); // Fix Risk 3: Track saving status
 const pendingSave = ref(false); // Track if a save was requested while saving
-const conflictState = ref<{ hasConflict: boolean; remoteData: any }>({ hasConflict: false, remoteData: null });
+const conflictState = ref<{ hasConflict: boolean; remoteData: WidgetConfig["data"] | null }>({
+  hasConflict: false,
+  remoteData: null,
+});
 const serverTs = ref(0);
 const lastInputAt = ref(0);
 const isBroadcasting = ref(false);
@@ -101,7 +104,18 @@ const handleCommand = (cmd: string, val?: string) => {
   editorRef.value?.execCommand(cmd, val);
 };
 
+const syncLocalFromEditorIfRich = () => {
+  if (mode.value !== "rich") return;
+  const root = (editorRef.value as unknown as { editorRef?: HTMLDivElement | null })?.editorRef;
+  if (!root) return;
+  const html = root.innerHTML || "";
+  if (html !== localData.value) {
+    localData.value = html;
+  }
+};
+
 const triggerSave = async () => {
+  syncLocalFromEditorIfRich();
   await saveVersionSnapshot(true);
   await saveToIndexedDB();
   await refreshVersions();
@@ -122,6 +136,7 @@ const toggleMode = () => {
 const parsePayload = (payload: unknown) => {
   let content = "";
   let nextServerTs = 0;
+  let nextMode: "simple" | "rich" | "" = "";
 
   if (typeof payload === "string") {
     content = payload;
@@ -139,14 +154,18 @@ const parsePayload = (payload: unknown) => {
     } else if (typeof data.updatedAt === "number") {
       nextServerTs = data.updatedAt;
     }
+    if (data.mode === "simple" || data.mode === "rich") {
+      nextMode = data.mode;
+    }
   }
 
-  return { content, serverTs: nextServerTs };
+  return { content, serverTs: nextServerTs, mode: nextMode };
 };
 
 const buildPayload = () => ({
   content: localData.value,
   server_ts: serverTs.value,
+  mode: mode.value,
 });
 
 let serverSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -159,6 +178,7 @@ const saveToServer = async (immediate = false, keepalive = false) => {
   const id = props.widget.id;
   if (!id) return;
   const doSave = async () => {
+    syncLocalFromEditorIfRich();
     if (isSaving.value) {
       pendingSave.value = true;
       return;
@@ -252,6 +272,9 @@ const applyRemotePayload = (payload: WidgetConfig["data"], force = false) => {
   if (parsed.content !== localData.value || parsed.serverTs !== serverTs.value) {
     localData.value = parsed.content;
     serverTs.value = parsed.serverTs;
+  }
+  if (parsed.mode === "simple" || parsed.mode === "rich") {
+    mode.value = parsed.mode;
   }
 };
 
@@ -629,11 +652,12 @@ watch(historyVersions, () => {
 
 
 
-const handleSocketUpdate = (data: any) => {
-  if (data?.widgetId !== props.widget.id) return;
-  if (data?.content) {
-    applyRemotePayload(data.content);
-  }
+const handleSocketUpdate = (data: unknown) => {
+  if (!data || typeof data !== "object") return;
+  const candidate = data as { widgetId?: unknown; content?: unknown };
+  if (candidate.widgetId !== props.widget.id) return;
+  if (!candidate.content) return;
+  applyRemotePayload(candidate.content as WidgetConfig["data"], true);
 };
 
 onMounted(() => {

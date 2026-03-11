@@ -12,6 +12,7 @@ import SystemStatusWidget from "./SystemStatusWidget.vue";
 import RssSettings from "./RssSettings.vue";
 import SearchSettings from "./SearchSettings.vue";
 import ScriptManager from "./ScriptManager.vue";
+import MarketplaceModal from "./MarketplaceModal.vue";
 import { DEFAULT_NETWORK_RULES, NETWORK_PRESET_RULES } from "@/utils/network";
 
 const props = defineProps<{ show: boolean }>();
@@ -547,6 +548,16 @@ const testWeatherConnection = async (sourceOverride?: string) => {
   }
 };
 
+const showMarketplace = ref(false);
+const openMarketplace = () => {
+  showMarketplace.value = true;
+};
+
+const setDevMarketplaceUrl = () => {
+  store.appConfig.marketplaceListUrl = "http://localhost:5174/";
+  store.saveData();
+};
+
 const passwordInput = ref("");
 const newPasswordInput = ref("");
 
@@ -1004,6 +1015,9 @@ const deleteVersion = async (id: string) => {
 
 onMounted(() => {
   if (store.username === "admin" && store.systemConfig.authMode === "single") {
+    fetchVersions();
+  } else if (store.isLogged) {
+    // 非单用户模式下，也允许查看自己的版本
     fetchVersions();
   }
 });
@@ -1675,7 +1689,7 @@ watch(activeTab, (val) => {
 </script>
 
 <template>
-  <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center p-3">
     <div
       v-if="isImporting"
       class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center"
@@ -1721,13 +1735,13 @@ watch(activeTab, (val) => {
       </button>
 
       <div
-        class="w-full md:w-1/4 bg-transparent border-b md:border-b-0 md:border-r border-gray-100 p-4 flex flex-col md:flex-col shrink-0 cursor-move glass-panel"
+        class="w-full md:w-1/4 bg-transparent border-b md:border-b-0 md:border-r border-gray-100 p-3 flex flex-col md:flex-col shrink-0 cursor-move glass-panel"
         @mousedown="onMouseDown"
       >
-        <h3 class="text-xl font-bold text-gray-900 mb-4 md:mb-6 px-2">设置</h3>
+        <h3 class="text-xl font-bold text-gray-900 mb-3 md:mb-4 px-2">设置</h3>
         <nav
           ref="navRef"
-          class="flex flex-row md:flex-col gap-2 md:gap-0 md:space-y-1 overflow-x-auto md:overflow-visible pb-2 md:pb-0 no-drag cursor-grab active:cursor-grabbing overscroll-contain"
+          class="flex flex-row md:flex-col gap-1 md:gap-0 md:space-y-0.5 overflow-x-auto md:overflow-visible pb-1 md:pb-0 no-drag cursor-grab active:cursor-grabbing overscroll-contain"
           @mousedown="onNavMouseDown"
           @mousemove="onNavMouseMove"
           @mouseup="onNavMouseUp"
@@ -1741,7 +1755,7 @@ watch(activeTab, (val) => {
                 ? 'selected-outline text-gray-900'
                 : 'border border-transparent text-gray-600 hover:bg-gray-50'
             "
-            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-4 py-2 rounded-lg text-sm transition-colors mb-0 md:mb-1"
+            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-3 py-1.5 rounded-lg text-sm transition-colors"
           >
             外观布局
           </button>
@@ -1752,7 +1766,7 @@ watch(activeTab, (val) => {
                 ? 'selected-outline text-gray-900'
                 : 'border border-transparent text-gray-600 hover:bg-gray-50'
             "
-            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-4 py-2 rounded-lg text-sm transition-colors mb-0 md:mb-1"
+            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-3 py-1.5 rounded-lg text-sm transition-colors"
           >
             单开组件
           </button>
@@ -1764,7 +1778,7 @@ watch(activeTab, (val) => {
                 ? 'selected-outline text-gray-900'
                 : 'border border-transparent text-gray-600 hover:bg-gray-50'
             "
-            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-4 py-2 rounded-lg text-sm transition-colors mb-0 md:mb-1"
+            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-3 py-1.5 rounded-lg text-sm transition-colors"
           >
             多开组件
           </button>
@@ -1775,7 +1789,7 @@ watch(activeTab, (val) => {
                 ? 'selected-outline text-gray-900'
                 : 'border border-transparent text-gray-600 hover:bg-gray-50'
             "
-            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-4 py-2 rounded-lg text-sm transition-colors mb-0 md:mb-1"
+            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-3 py-1.5 rounded-lg text-sm transition-colors"
           >
             Docker 管理
           </button>
@@ -1786,19 +1800,19 @@ watch(activeTab, (val) => {
                 ? 'selected-outline text-gray-900'
                 : 'border border-transparent text-gray-600 hover:bg-gray-50'
             "
-            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-4 py-2 rounded-lg text-sm transition-colors"
+            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-3 py-1.5 rounded-lg text-sm transition-colors"
           >
             账户管理
           </button>
           <button
             @click="activeTab = 'network'"
             :class="[
-              'px-4 py-2 text-sm transition-colors text-left flex items-center gap-2',
+              'px-3 py-1.5 text-sm transition-colors text-left flex items-center gap-1.5',
               activeTab === 'network'
                 ? 'selected-outline text-gray-900'
                 : 'border border-transparent text-gray-600 hover:bg-gray-50',
             ]"
-            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 rounded-lg mb-0 md:mb-1"
+            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 rounded-lg"
           >
             网络判定
           </button>
@@ -1809,7 +1823,7 @@ watch(activeTab, (val) => {
                 ? 'selected-outline text-gray-900'
                 : 'border border-transparent text-gray-600 hover:bg-gray-50'
             "
-            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-4 py-2 rounded-lg text-sm transition-colors mb-0 md:mb-1"
+            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-3 py-1.5 rounded-lg text-sm transition-colors"
           >
             开放中心
           </button>
@@ -1820,18 +1834,18 @@ watch(activeTab, (val) => {
                 ? 'selected-outline text-gray-900'
                 : 'border border-transparent text-red-500 hover:bg-red-50 font-medium'
             "
-            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-4 py-2 rounded-lg text-sm transition-colors"
+            class="whitespace-nowrap md:whitespace-normal w-auto md:w-full shrink-0 text-left px-3 py-1.5 rounded-lg text-sm transition-colors"
           >
             关于
           </button>
         </nav>
-        <div v-if="iconSrc" class="mt-auto px-4 pb-4 hidden md:flex justify-center">
+        <div v-if="iconSrc" class="mt-auto px-3 pb-3 hidden md:flex justify-center">
           <img :src="iconSrc" class="w-1/4 h-auto rounded-lg shadow-sm" alt="Custom Icon" />
         </div>
       </div>
 
       <div class="flex-1 flex flex-col bg-transparent overflow-hidden glass-panel">
-        <div class="flex-1 p-4 overflow-y-auto overscroll-contain" @wheel.stop>
+        <div class="flex-1 p-3 overflow-y-auto overscroll-contain" @wheel.stop>
           <div v-if="activeTab === 'style'" class="space-y-4">
             <div class="bg-white/60 border border-gray-100 rounded-xl p-4">
               <h4 class="text-base font-bold mb-4 text-gray-900">基础信息</h4>
@@ -3700,6 +3714,38 @@ ip:100.64."
               </h4>
             </div>
 
+            <!-- Component Store Entrance -->
+            <div class="bg-gray-50 border border-gray-100 rounded-xl p-4 mb-6">
+              <h4 class="text-base font-bold text-gray-900 mb-4">组件商城</h4>
+              <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                <button
+                  @click="openMarketplace"
+                  class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shrink-0 shadow-sm"
+                >
+                  <span class="text-lg leading-none">🛒</span> 进入组件商城
+                </button>
+                <div class="flex-1 relative flex items-center gap-2">
+                  <input
+                    v-model="store.appConfig.marketplaceListUrl"
+                    @change="store.saveData()"
+                    type="text"
+                    placeholder="组件商城地址 (默认 http://qdnas.icu:23111/)"
+                    class="flex-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
+                  />
+                  <button
+                    @click="setDevMarketplaceUrl"
+                    class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg transition-colors whitespace-nowrap border border-gray-200"
+                    title="使用本地开发地址 (http://localhost:5174/)"
+                  >
+                    填入开发地址
+                  </button>
+                </div>
+              </div>
+              <p class="text-xs text-gray-500 mt-2">
+                点击按钮将关闭设置窗口并前往组件商城。您可以在右侧输入框修改商城地址。
+              </p>
+            </div>
+
             <!-- Music Widget Settings -->
             <div id="music-settings" class="bg-gray-50 border border-gray-100 rounded-xl p-4 mb-6">
               <div class="flex items-center justify-between mb-4">
@@ -4384,7 +4430,7 @@ document.querySelector('.card-item').addEventListener('click', () => {
                   单用户默认密码:admin 多用户模式用户名密码都默认：admin
                 </p>
 
-                <div v-if="store.systemConfig.authMode === 'single'" class="mt-4">
+                <div class="mt-4">
                   <div class="flex gap-2 items-center mb-2">
                     <input
                       v-model="versionLabel"
@@ -4398,9 +4444,18 @@ document.querySelector('.card-item').addEventListener('click', () => {
                       保存为版本
                     </button>
                   </div>
-                  <div class="text-[10px] text-gray-500 mb-2">保存位置：data/config_versions</div>
+                  <div class="text-[10px] text-gray-500 mb-2">
+                    {{
+                      store.systemConfig.authMode === "single"
+                        ? "保存位置：data/config_versions"
+                        : "保存位置：data/config_versions (仅当前用户可见)"
+                    }}
+                  </div>
                   <div class="max-h-40 overflow-y-auto space-y-1">
                     <div v-if="loadingVersions" class="text-xs text-gray-500">加载中...</div>
+                    <div v-else-if="versions.length === 0" class="text-xs text-gray-400 text-center py-4">
+                      暂无保存的版本
+                    </div>
                     <div
                       v-for="v in versions"
                       :key="v.id"
@@ -4839,6 +4894,8 @@ document.querySelector('.card-item').addEventListener('click', () => {
       </div>
     </div>
   </div>
+
+  <MarketplaceModal :show="showMarketplace" @update:show="showMarketplace = $event" />
 </template>
 
 <style scoped>

@@ -175,21 +175,19 @@ const requestThumbGeneration = async (item: TransferItem) => {
   thumbGenerating.value[item.id] = true;
   
   try {
-    const response = await fetch(`${store.baseUrl}/api/transfer/generate-thumb/${filename}/64`, {
+    const response = await fetch(`/api/transfer/generate-thumb/${encodeURIComponent(filename)}/64`, {
       method: "POST",
       headers: authHeaderOnly(),
     });
     
     if (response.ok) {
-      const result = await response.json();
+      const result = (await response.json().catch(() => ({}))) as { thumbs?: Record<string, string> };
       if (result.thumbs) {
-        const idx = items.value.findIndex(i => i.id === item.id);
-        if (idx !== -1 && items.value[idx].type === "file") {
-          if (!items.value[idx].file.thumbs) {
-            items.value[idx].file.thumbs = {};
-          }
-          Object.assign(items.value[idx].file.thumbs, result.thumbs);
-        }
+        const idx = items.value.findIndex((i) => i.id === item.id);
+        const current = idx >= 0 ? items.value[idx] : undefined;
+        if (!current || current.type !== "file") return;
+        if (!current.file.thumbs) current.file.thumbs = {};
+        Object.assign(current.file.thumbs, result.thumbs);
       }
     }
   } catch (err) {

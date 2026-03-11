@@ -32,11 +32,13 @@ var memoFileMu sync.Mutex
 type MemoFileData struct {
 	Content  string `json:"content"`
 	ServerTS int64  `json:"server_ts"`
+	Mode     string `json:"mode,omitempty"`
 }
 
 type SaveMemoPayload struct {
-	Content  string `json:"content"`
-	ServerTS *int64 `json:"server_ts"`
+	Content  string  `json:"content"`
+	ServerTS *int64  `json:"server_ts"`
+	Mode     *string `json:"mode"`
 }
 
 func normalizeVersion(v interface{}) int64 {
@@ -200,6 +202,32 @@ func GetData(c *gin.Context) {
 		userData["version"] = int64(0)
 	}
 
+	// Align memo widget data with memo files to avoid rollback on full refresh
+	if widgets, ok := userData["widgets"].([]interface{}); ok {
+		memoFileMu.Lock()
+		for _, w := range widgets {
+			widgetMap, ok := w.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			wType, _ := widgetMap["type"].(string)
+			if wType != "memo" {
+				continue
+			}
+			widgetID, _ := widgetMap["id"].(string)
+			if widgetID == "" {
+				continue
+			}
+			memoFile := memoFilePath(username, widgetID)
+			data, err := ensureMemoFile(userFile, memoFile, widgetID)
+			if err != nil {
+				continue
+			}
+			widgetMap["data"] = data
+		}
+		memoFileMu.Unlock()
+	}
+
 	if userStatErr == nil && sysStatErr == nil {
 		getDataCacheMu.Lock()
 		getDataCache[cacheKey] = getDataCacheEntry{
@@ -323,6 +351,13 @@ func loadMemoFallbackContent(userFile, widgetID string) string {
 func ensureMemoFile(userFile, memoFile, widgetID string) (MemoFileData, error) {
 	var data MemoFileData
 	if err := utils.ReadJSON(memoFile, &data); err == nil {
+		if data.Mode != "simple" && data.Mode != "rich" {
+			if strings.Contains(data.Content, "<") && strings.Contains(data.Content, ">") {
+				data.Mode = "rich"
+			} else {
+				data.Mode = "simple"
+			}
+		}
 		return data, nil
 	}
 	if _, err := os.Stat(memoFile); err == nil {
@@ -338,6 +373,12 @@ func ensureMemoFile(userFile, memoFile, widgetID string) (MemoFileData, error) {
 	initial := MemoFileData{
 		Content:  content,
 		ServerTS: serverTS,
+		Mode: func() string {
+			if strings.Contains(content, "<") && strings.Contains(content, ">") {
+				return "rich"
+			}
+			return "simple"
+		}(),
 	}
 	if err := utils.WriteJSON(memoFile, initial); err != nil {
 		return MemoFileData{}, err
@@ -396,6 +437,10 @@ func SaveMemo(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "server_ts is required"})
 		return
 	}
+	if payload.Mode != nil && *payload.Mode != "simple" && *payload.Mode != "rich" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mode must be simple or rich"})
+		return
+	}
 
 	var sysConfig models.SystemConfig
 	utils.ReadJSON(config.SystemConfigFile, &sysConfig)
@@ -425,9 +470,21 @@ func SaveMemo(c *gin.Context) {
 	if nextTS <= current.ServerTS {
 		nextTS = current.ServerTS + 1
 	}
+	nextMode := current.Mode
+	if payload.Mode != nil {
+		nextMode = *payload.Mode
+	}
+	if nextMode != "simple" && nextMode != "rich" {
+		if strings.Contains(payload.Content, "<") && strings.Contains(payload.Content, ">") {
+			nextMode = "rich"
+		} else {
+			nextMode = "simple"
+		}
+	}
 	next := MemoFileData{
 		Content:  payload.Content,
 		ServerTS: nextTS,
+		Mode:     nextMode,
 	}
 	if err := utils.WriteJSON(memoFile, next); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save memo"})

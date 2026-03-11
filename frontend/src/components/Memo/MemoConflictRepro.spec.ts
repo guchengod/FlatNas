@@ -38,17 +38,23 @@ vi.mock('../../config', () => ({
   }
 }));
 
+type FetchResponse = {
+  ok: boolean;
+  status?: number;
+  json: () => Promise<unknown>;
+};
+
 describe('MemoWidget Conflict Reproduction', () => {
-  let wrapper: VueWrapper<any>;
-  let fetchMock: any;
+  let wrapper: VueWrapper;
+  let fetchMock: typeof fetch;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    fetchMock = vi.fn();
+    fetchMock = vi.fn() as unknown as typeof fetch;
     global.fetch = fetchMock;
 
     // Default fallback
-    fetchMock.mockResolvedValue({
+    (fetchMock as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       json: async () => ({ success: true, data: { content: '', server_ts: 0 } })
     });
@@ -77,15 +83,19 @@ describe('MemoWidget Conflict Reproduction', () => {
     await nextTick();
 
     // Prepare promises
-    let resolveFirstFetch: (value: any) => void;
-    const firstFetchPromise = new Promise(resolve => { resolveFirstFetch = resolve; });
+    let resolveFirstFetch!: (value: FetchResponse) => void;
+    const firstFetchPromise = new Promise<FetchResponse>((resolve) => {
+      resolveFirstFetch = resolve;
+    });
 
-    let resolveSecondFetch: (value: any) => void;
-    const secondFetchPromise = new Promise(resolve => { resolveSecondFetch = resolve; });
+    let resolveSecondFetch!: (value: FetchResponse) => void;
+    const secondFetchPromise = new Promise<FetchResponse>((resolve) => {
+      resolveSecondFetch = resolve;
+    });
 
     // Custom implementation to control responses based on call order
     let callCount = 0;
-    fetchMock.mockImplementation(async (url: string) => {
+    (fetchMock as unknown as ReturnType<typeof vi.fn>).mockImplementation(async () => {
       callCount++;
 
       if (callCount === 1) {
@@ -111,8 +121,11 @@ describe('MemoWidget Conflict Reproduction', () => {
 
     // Check first fetch
     expect(callCount).toBe(1);
-    const firstCall = fetchMock.mock.calls[0];
-    const firstBody = JSON.parse(firstCall[1].body);
+    const firstCall = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      RequestInfo | URL,
+      RequestInit,
+    ];
+    const firstBody = JSON.parse(firstCall[1].body as string) as { server_ts?: number };
     expect(firstBody.server_ts).toBe(100);
     // expect(firstBody.content).toBe('initialA'); // Might be initialAB if logic is fast, but let's check
 
@@ -140,8 +153,14 @@ describe('MemoWidget Conflict Reproduction', () => {
     // Now pending save should trigger
     expect(callCount).toBe(2);
 
-    const secondCall = fetchMock.mock.calls[1];
-    const secondBody = JSON.parse(secondCall[1].body);
+    const secondCall = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[1] as [
+      RequestInfo | URL,
+      RequestInit,
+    ];
+    const secondBody = JSON.parse(secondCall[1].body as string) as {
+      server_ts?: number;
+      content?: string;
+    };
     expect(secondBody.server_ts).toBe(101); // Fix verification
     expect(secondBody.content).toBe('initialAB');
 

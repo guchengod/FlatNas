@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, shallowRef } from "vue";
-import { useDraggable, useWindowSize } from "@vueuse/core";
+import { ref, watch, computed, shallowRef, onMounted, onUnmounted } from "vue";
 import type { NavItem, SimpleIcon, AliIcon } from "@/types";
 import { useMainStore } from "../stores/main";
 import IconUploader from "./IconUploader.vue";
@@ -19,6 +18,23 @@ const props = defineProps<{
 const emit = defineEmits(["update:show", "save"]);
 
 const store = useMainStore();
+
+const currentHour = ref(new Date().getHours());
+let daylightTimer: number | null = null;
+const updateHour = () => {
+  currentHour.value = new Date().getHours();
+};
+const isNightTime = computed(() => currentHour.value >= 18 || currentHour.value < 6);
+const isNightDaylightMode = computed(
+  () => store.appConfig.daylightModeEnabled && isNightTime.value,
+);
+
+onMounted(() => {
+  daylightTimer = window.setInterval(updateHour, 60000);
+});
+onUnmounted(() => {
+  if (daylightTimer) clearInterval(daylightTimer);
+});
 
 const isVertical = computed(() => {
   const layout = props.groupId
@@ -865,43 +881,20 @@ const submit = async () => {
   }
 };
 
-// --- Draggable Logic ---
-const modalRef = ref<HTMLElement | null>(null);
-const headerRef = ref<HTMLElement | null>(null);
-const { width: winWidth, height: winHeight } = useWindowSize();
-
-const { style: draggableStyle, x, y } = useDraggable(modalRef, {
-  initialValue: { x: winWidth.value / 2 - 224, y: winHeight.value / 2 - 300 },
-  handle: headerRef,
-  preventDefault: true,
-});
-
-// Reset position when opening
-watch(
-  () => props.show,
-  (val) => {
-    if (val) {
-      // Center it
-      x.value = winWidth.value / 2 - 224; // 448px / 2
-      y.value = Math.max(20, winHeight.value / 2 - 300);
-    }
-  }
-);
 </script>
 
 <template>
   <div
     v-if="show"
-    class="fixed inset-0 z-50 pointer-events-none"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm"
+    @click.self="close"
   >
     <div
-      ref="modalRef"
-      :style="draggableStyle"
-      class="fixed bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden pointer-events-auto"
+      class="rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transition-all duration-300"
+      :class="isNightDaylightMode ? 'night-settings bg-slate-900/60 backdrop-blur-xl border border-white/10' : 'bg-white'"
     >
       <div
-        ref="headerRef"
-        class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-white cursor-move select-none"
+        class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-white select-none"
       >
         <h3 class="text-lg font-bold text-gray-800">{{ data ? "修改项目" : "添加新项目" }}</h3>
 
@@ -1477,5 +1470,50 @@ watch(
     opacity: 1;
     transform: translateY(0);
   }
+}
+.night-settings {
+  color: #f8fafc;
+}
+.night-settings :deep(.bg-white\/90),
+.night-settings :deep(.bg-white\/80),
+.night-settings :deep(.bg-white\/70),
+.night-settings :deep(.bg-white\/60),
+.night-settings :deep(.bg-white),
+.night-settings :deep(.bg-gray-50),
+.night-settings :deep(.bg-gray-100),
+.night-settings :deep(.bg-white\/90):hover,
+.night-settings :deep(.bg-white\/80):hover,
+.night-settings :deep(.bg-white\/70):hover,
+.night-settings :deep(.bg-white\/60):hover,
+.night-settings :deep(.bg-white):hover,
+.night-settings :deep(.bg-gray-50):hover,
+.night-settings :deep(.bg-gray-100):hover {
+  background-color: rgba(15, 23, 42, 0.55) !important;
+  backdrop-filter: blur(12px);
+}
+/* 夜间模式：侧栏等使用 hover:bg-gray-50 的按钮悬停时用深色背景，避免与浅色文字同色 */
+.night-settings :deep(.hover\:bg-gray-50):hover,
+.night-settings :deep(.hover\:bg-gray-100):hover {
+  background-color: rgba(15, 23, 42, 0.55) !important;
+  backdrop-filter: blur(8px);
+}
+.night-settings :deep(.text-gray-900),
+.night-settings :deep(.text-gray-800),
+.night-settings :deep(.text-gray-700),
+.night-settings :deep(.text-gray-600),
+.night-settings :deep(.text-gray-500),
+.night-settings :deep(.text-gray-400) {
+  color: #f8fafc !important;
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.6);
+}
+.night-settings :deep(.border-gray-100),
+.night-settings :deep(.border-gray-200),
+.night-settings :deep(.border-gray-300),
+.night-settings :deep(.border-gray-400) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+.night-settings :deep(input::placeholder),
+.night-settings :deep(textarea::placeholder) {
+  color: rgba(248, 250, 252, 0.6);
 }
 </style>

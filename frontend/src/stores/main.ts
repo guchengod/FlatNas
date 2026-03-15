@@ -1424,6 +1424,10 @@ export const useMainStore = defineStore("main", () => {
         if (fallbackLoaded && cacheLoadedAt.value === null) {
           cacheLoadedAt.value = Date.now();
         }
+        // 无服务端数据且无缓存时（如首次访问 / 401 未登录），仍让页面可交互，避免全屏 loading 一直挡住登录按钮
+        if (cacheLoadedAt.value === null) {
+          cacheLoadedAt.value = Date.now();
+        }
         if (!serverSnapshotRetryTimer) {
           serverSnapshotRetryTimer = setTimeout(async () => {
             serverSnapshotRetryTimer = null;

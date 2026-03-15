@@ -319,7 +319,7 @@ onMounted(() => {
   fetchWeather();
   startTimer();
   // Fetch weather every 1 hour
-  weatherTimer = setInterval(() => fetchWeather(), 3600000);
+  weatherTimer = setInterval(() => fetchWeather(), 2 * 60 * 60 * 1000);
   document.addEventListener("visibilitychange", handleVisibilityChange);
 });
 

@@ -272,6 +272,7 @@ server {
 server {
     listen 443 ssl http2;
     server_name ${domain};
+    client_max_body_size 20m;
     
     ssl_certificate ${ssl_cert};
     ssl_certificate_key ${ssl_key};
@@ -326,6 +327,7 @@ EOF
 server {
     listen ${frontend_port};
     server_name ${domain};
+    client_max_body_size 20m;
 
     root ${PUBLIC_DIR};
     index index.html;

@@ -22,6 +22,8 @@ const extractHost = (input) => {
 
 const isIpv4 = (host) => /^(\d{1,3}\.){3}\d{1,3}$/.test(host);
 
+const isIpv4PrefixLike = (value) => /^\d{1,3}(\.\d{1,3}){0,3}\.?$/.test(String(value || "").trim());
+
 const isPrivateIpv4 = (host) => {
   if (!isIpv4(host)) return false;
   if (/^127\./.test(host)) return true;
@@ -86,8 +88,13 @@ const classifyByRules = (host, rules) => {
     }
 
     if (v.startsWith("ip:")) {
-      const target = v.slice("ip:".length).trim();
+      const rawTarget = v.slice("ip:".length).trim();
+      const target = rawTarget.endsWith(".") && isIpv4(rawTarget.slice(0, -1)) ? rawTarget.slice(0, -1) : rawTarget;
       if (target && host === target) return "lan";
+      if (target && isIpv4(host) && !isIpv4(target) && isIpv4PrefixLike(target)) {
+        const prefix = target.endsWith(".") ? target : `${target}.`;
+        if (host.startsWith(prefix)) return "lan";
+      }
       continue;
     }
 

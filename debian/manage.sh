@@ -183,6 +183,7 @@ server {
 server {
     listen 443 ssl http2;
     server_name _;
+    client_max_body_size 20m;
     
     ssl_certificate ${SSL_CERT};
     ssl_certificate_key ${SSL_KEY};
@@ -236,6 +237,7 @@ EOF
 server {
     listen ${FRONTEND_PORT};
     server_name _;
+    client_max_body_size 20m;
 
     root ${PUBLIC_DIR};
     index index.html;

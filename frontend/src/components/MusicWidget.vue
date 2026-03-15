@@ -194,7 +194,7 @@ const login = async () => {
         );
         if (targetWidget && targetWidget.data) {
           targetWidget.data.token = data.token;
-          store.saveData();
+          store.markDirty();
         }
         // Optionally fetch profile
         fetchProfile();
@@ -1589,17 +1589,18 @@ const formatTime = (s: number) => {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 };
 
-let pollTimer: number | null = null;
+let pulseRegistered = false;
 
 const startPolling = () => {
-  if (pollTimer != null) return;
-  pollTimer = window.setInterval(fetchPlayerState, 3000);
+  if (pulseRegistered) return;
+  pulseRegistered = true;
+  store.registerDashboardPulse(fetchPlayerState);
 };
 
 const stopPolling = () => {
-  if (pollTimer == null) return;
-  window.clearInterval(pollTimer);
-  pollTimer = null;
+  if (!pulseRegistered) return;
+  pulseRegistered = false;
+  store.unregisterDashboardPulse(fetchPlayerState);
 };
 
 onMounted(() => {

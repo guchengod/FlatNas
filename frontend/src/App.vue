@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onMounted, watch, computed } from "vue";
+import { onMounted, watch, computed, ref } from "vue";
 import GridPanel from "./components/GridPanel.vue";
 import StatusMonitor from "./components/StatusMonitor.vue";
 import { useMainStore } from "./stores/main";
-import type { CustomScript } from "@/types";
+import type { CustomScript, MarketplaceItem } from "@/types";
 import { useWindowScroll, useWindowSize } from "@vueuse/core";
 
 const store = useMainStore();
@@ -12,6 +12,19 @@ const { width: windowWidth, height: windowHeight } = useWindowSize();
 
 const showBackToTop = computed(() => y.value > windowHeight.value);
 const statusMonitorWidget = computed(() => store.widgets.find((w) => w.type === "status-monitor"));
+const saveErrorMessage = ref("");
+let saveErrorTimer: number | null = null;
+
+const pushSaveError = (message: string) => {
+  saveErrorMessage.value = message;
+  if (saveErrorTimer) {
+    window.clearTimeout(saveErrorTimer);
+  }
+  saveErrorTimer = window.setTimeout(() => {
+    saveErrorMessage.value = "";
+    saveErrorTimer = null;
+  }, 6000);
+};
 // Auto-detect ultrawide screen
 const checkUltrawide = () => {
   if (!store.appConfig.autoUltrawide) {
@@ -97,15 +110,30 @@ type CustomHooks = {
   destroy?: (ctx: CustomCtx) => void | Promise<void>;
 };
 
+// Readonly view of the store exposed to custom scripts.
+// Only data properties are exposed — no mutation methods.
+type ReadonlyCtxStore = {
+  readonly widgets: ReturnType<typeof useMainStore>["widgets"];
+  readonly groups: ReturnType<typeof useMainStore>["groups"];
+  readonly appConfig: ReturnType<typeof useMainStore>["appConfig"];
+  readonly isLogged: boolean;
+  readonly currentVersion: string | undefined;
+};
+
 type CustomCtx = {
-  store: ReturnType<typeof useMainStore>;
+  store: ReadonlyCtxStore;
   root: HTMLElement | null;
   query: (selector: string) => Element | null;
   queryAll: (selector: string) => Element[];
+  widgetEl: (id: string) => HTMLElement | null;
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   onCleanup: (fn: () => void) => void;
   on: (type: string, handler: (ev: CustomEvent) => void) => () => void;
   emit: (type: string, detail?: unknown) => void;
 };
+
+// How long to wait (ms) before triggering the update() hook after a DOM mutation.
+const UPDATE_DEBOUNCE_MS = 300;
 
 const customJsRuntime = (() => {
   const scriptClass = "custom-js-injected";
@@ -122,17 +150,42 @@ const customJsRuntime = (() => {
     updateTimer = null;
   };
 
+  // Read-only store proxy: exposes data but hides all action methods.
+  const readonlyStore: ReadonlyCtxStore = {
+    get widgets() { return store.widgets; },
+    get groups() { return store.groups; },
+    get appConfig() { return store.appConfig; },
+    get isLogged() { return store.isLogged; },
+    get currentVersion() { return store.currentVersion; },
+  };
+
+  // ctx.fetch: auto-proxies cross-origin requests through /proxy?url=
+  const ctxFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    try {
+      const urlStr = typeof input === "string" ? input : (input instanceof URL ? input.href : (input as Request).url);
+      if (urlStr.startsWith("http")) {
+        const parsed = new URL(urlStr);
+        if (parsed.hostname !== window.location.hostname) {
+          return await window.fetch("/proxy?url=" + encodeURIComponent(urlStr), init);
+        }
+      }
+    } catch { /* fall through to normal fetch */ }
+    return window.fetch(input, init);
+  };
+
   const ctx: CustomCtx = {
-    store,
-    get root() {
-      return getRoot();
-    },
+    store: readonlyStore,
+    get root() { return getRoot(); },
     query(selector: string) {
       return getRoot()?.querySelector(selector) || null;
     },
     queryAll(selector: string) {
       return Array.from(getRoot()?.querySelectorAll(selector) || []);
     },
+    widgetEl(id: string) {
+      return document.getElementById(`widget-${id}`) as HTMLElement | null;
+    },
+    fetch: ctxFetch,
     onCleanup(fn: () => void) {
       if (typeof fn === "function") cleanupFns.push(fn);
     },
@@ -165,9 +218,7 @@ const customJsRuntime = (() => {
     hooks = null;
     while (cleanupFns.length) {
       const fn = cleanupFns.pop();
-      try {
-        fn?.();
-      } catch {}
+      try { fn?.(); } catch { /* ignore cleanup errors */ }
     }
     removeScripts();
   };
@@ -181,7 +232,7 @@ const customJsRuntime = (() => {
       } catch (e) {
         console.error("Custom JS update failed:", e);
       }
-    }, 120);
+    }, UPDATE_DEBOUNCE_MS);
   };
 
   const ensureObserver = () => {
@@ -190,11 +241,8 @@ const customJsRuntime = (() => {
       if (!hooks?.update) return;
       scheduleUpdate();
     });
-    observer.observe(getRoot() || document.body, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-    });
+    // Observe only childList + subtree to reduce noise; attribute changes excluded.
+    observer.observe(getRoot() || document.body, { subtree: true, childList: true });
     cleanupFns.push(() => observer?.disconnect());
   };
 
@@ -226,7 +274,8 @@ const customJsRuntime = (() => {
     setRegister();
     pendingRegister = null;
 
-    (window as unknown as Record<string, unknown>).FlatNasCustomCtx = ctx;
+    const w = window as unknown as Record<string, unknown>;
+    w.FlatNasCustomCtx = ctx;
 
     if (!agreed) return;
 
@@ -240,6 +289,24 @@ const customJsRuntime = (() => {
 
     if (scripts.length === 0) return;
 
+    // Track how many async module scripts are still loading.
+    // Non-module scripts execute synchronously on append so they count as 0 async.
+    let pendingModuleCount = 0;
+    let nonModuleScriptAppended = false;
+
+    const tryAdopt = () => {
+      if (nonce !== currentNonce) return;
+      const fallback = (w.FlatNasCustom as CustomHooks | undefined) || null;
+      const next = (pendingRegister || fallback) as CustomHooks | null;
+      pendingRegister = null;
+      void adoptHooks(next);
+    };
+
+    const onModuleLoaded = () => {
+      pendingModuleCount--;
+      if (pendingModuleCount === 0) tryAdopt();
+    };
+
     scripts.forEach((item) => {
       const src = item.content;
       const looksModule =
@@ -249,14 +316,19 @@ const customJsRuntime = (() => {
 
       const script = document.createElement("script");
       script.className = scriptClass;
-      if (looksModule) script.type = "module";
 
+      // Suffix lets module scripts self-register via FlatNasCustomRegister(FlatNasCustom).
       const suffix = "\n;globalThis.FlatNasCustomRegister?.(globalThis.FlatNasCustom);";
 
       if (looksModule) {
+        script.type = "module";
         script.textContent = `${src}${suffix}`;
+        // For module scripts, the `load` event fires after top-level execution — reliable timing.
+        pendingModuleCount++;
+        script.addEventListener("load", onModuleLoaded);
+        script.addEventListener("error", onModuleLoaded);
       } else {
-        // Proxy wrapper
+        // Build a local `fetch` override if useProxy is enabled.
         let proxyCode = "";
         if (item.useProxy) {
           proxyCode = `
@@ -266,36 +338,29 @@ const fetch = async (input, init) => {
     if (typeof input === 'string' && input.startsWith('http')) {
       const url = new URL(input);
       if (url.hostname !== window.location.hostname) {
-        const target = '/proxy?url=' + encodeURIComponent(input);
-        return await originalFetch(target, init);
+        return await originalFetch('/proxy?url=' + encodeURIComponent(input), init);
       }
     }
   } catch (e) {}
   return originalFetch(input, init);
 };`;
         }
-
-        const wrapped = `;(async () => {\n${proxyCode}\ntry {\n${src}\n} catch (e) {\nconsole.error('Custom JS execution failed (${item.name}):', e);\n}\n})();`;
+        const wrapped = `;(async () => {\n${proxyCode}\ntry {\n${src}\n} catch (e) {\nconsole.error('[FlatNas Custom JS: ${item.name}]', e);\n}\n})();`;
         script.textContent = `${wrapped}${suffix}`;
+        nonModuleScriptAppended = true;
       }
 
-      script.onerror = (e) => {
-        console.error(`Custom JS script failed (${item.name}):`, e);
-      };
-
+      script.onerror = (e) => console.error(`[FlatNas Custom JS: ${item.name}] load error:`, e);
       document.body.appendChild(script);
     });
 
-    const adoptFromWindow = () => {
-      const w = window as unknown as Record<string, unknown>;
-      const fallback = (w.FlatNasCustom as CustomHooks | undefined) || null;
-      const next = (pendingRegister || fallback) as CustomHooks | null;
-      pendingRegister = null;
-      if (nonce !== currentNonce) return;
-      void adoptHooks(next);
-    };
-
-    window.setTimeout(adoptFromWindow, 0);
+    if (pendingModuleCount === 0) {
+      // No module scripts (or none at all) — non-module scripts ran synchronously.
+      if (nonModuleScriptAppended || scripts.length === 0) {
+        window.setTimeout(tryAdopt, 0);
+      }
+    }
+    // If pendingModuleCount > 0, adoption is triggered by onModuleLoaded callbacks.
   };
 
   return { apply, destroy: doDestroy };
@@ -318,7 +383,82 @@ watch(
 );
 
 onMounted(() => {
+  // Listen for marketplace install events from new windows/tabs (Component Store)
+  window.addEventListener("message", async (event: MessageEvent) => {
+    // Validate message structure
+    const { type, payload } = event.data || {};
+    if (type !== "INSTALL_COMPONENT" || !payload) return;
+
+    // Optional: Validate origin if needed. For now we trust the user's browser context.
+    // If strict security is needed, we should check against store.appConfig.marketplaceListUrl
+
+    const item = payload as MarketplaceItem;
+    
+    // JS Disclaimer
+    if (item.js && !store.appConfig.customJsDisclaimerAgreed) {
+      const ok = confirm(
+        `安全提示\n\n组件 "${item.name}" 包含自定义 JavaScript 脚本。\n自定义脚本具有较高权限，可能存在安全风险。\n\n请确认您信任该组件来源，是否继续安装？`
+      );
+      if (!ok) return;
+      store.appConfig.customJsDisclaimerAgreed = true;
+    }
+
+    try {
+      store.applyMarketplaceItem(item);
+      
+      // Notify source window
+      if (event.source) {
+        (event.source as Window).postMessage({ type: "INSTALL_SUCCESS", id: item.id }, event.origin);
+      }
+      
+      // Notify user in main window
+      alert(`组件 "${item.name}" 安装成功！`);
+    } catch (e) {
+      console.error(e);
+      alert(`组件 "${item.name}" 安装失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  });
+
   store.initGlobalDrag();
+  const win = window as Window & { __flatnasSaveFetchWrapped?: boolean };
+  if (!win.__flatnasSaveFetchWrapped) {
+    const originalFetch = window.fetch.bind(window);
+    win.__flatnasSaveFetchWrapped = true;
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const resolveUrl = () => {
+        if (typeof input === "string") return input;
+        if (input instanceof URL) return input.href;
+        return input.url;
+      };
+      const rawUrl = resolveUrl();
+      let isSaveRequest = false;
+      try {
+        const url = rawUrl.startsWith("http")
+          ? new URL(rawUrl)
+          : new URL(rawUrl, window.location.origin);
+        isSaveRequest = url.pathname === "/api/save";
+      } catch {
+        isSaveRequest = rawUrl.includes("/api/save");
+      }
+      try {
+        const res = await originalFetch(input, init);
+        if (isSaveRequest && !res.ok && res.status !== 401 && res.status !== 409) {
+          if (res.status === 413) {
+            pushSaveError("实时保存失败：请求体过大，当前修改未成功写入。");
+          } else {
+            pushSaveError(`实时保存失败：服务器返回 ${res.status}。`);
+          }
+        }
+        return res;
+      } catch (e) {
+        if (isSaveRequest) {
+          const msg = e instanceof Error ? e.message : String(e);
+          pushSaveError(`实时保存失败：${msg || "网络异常"}`);
+        }
+        throw e;
+      }
+    };
+  }
   const style = document.createElement("style");
   style.id = "devtools-hider";
   style.innerHTML = `
@@ -344,53 +484,117 @@ onMounted(() => {
 
 <template>
   <div class="flatnas-handshake-signal" style="display: none !important"></div>
+  
   <GridPanel />
 
-  <!-- 保存中提示 -->
-  <Transition name="fade-up">
-    <div
-      v-if="store.isSaving"
-      class="fixed bottom-6 right-6 z-[100] px-4 py-2 bg-black/80 text-white text-xs font-medium rounded-full shadow-lg backdrop-blur-sm border border-white/10 flex items-center gap-2"
-    >
-      <div class="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-      <span>正在保存...</span>
-    </div>
-  </Transition>
-
-  <!-- 冲突提示条 -->
-  <Transition name="slide-down">
+  <!-- 冲突提示：居中模态框 -->
+  <Transition name="fade">
     <div
       v-if="store.conflictState.show"
-      class="fixed top-0 inset-x-0 z-[110] bg-red-500/95 text-white shadow-xl backdrop-blur-md border-b border-red-400/50"
+      class="fixed inset-0 z-[130] flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="conflict-title"
     >
-      <div class="max-w-7xl mx-auto px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-3">
-        <div class="flex items-center gap-3">
-          <div class="p-2 bg-white/20 rounded-full shrink-0">
-            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
+      <div
+        class="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+        @click.stop
+      />
+      <div
+        class="relative w-full max-w-md rounded-2xl bg-white dark:bg-neutral-800 shadow-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden"
+      >
+        <div class="p-5 sm:p-6">
+          <div class="flex items-start gap-3">
+            <div class="p-2 rounded-full bg-red-100 dark:bg-red-900/40 shrink-0">
+              <svg class="w-5 h-5 text-red-600 dark:text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <div class="min-w-0 flex-1">
+              <h2 id="conflict-title" class="font-bold text-base text-neutral-900 dark:text-white">
+                版本冲突 (Version Conflict)
+              </h2>
+              <p class="mt-1.5 text-sm text-neutral-600 dark:text-neutral-400">
+                其他设备或标签页已更新配置，请选择解决方式。
+              </p>
+              <p class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span class="inline-flex items-center gap-1 rounded-md bg-neutral-100 dark:bg-neutral-700 px-2 py-1 font-mono text-neutral-700 dark:text-neutral-300">
+                  服务端 v{{ store.conflictState.serverVersion }}
+                </span>
+                <span class="text-neutral-400 dark:text-neutral-500">/</span>
+                <span class="inline-flex items-center gap-1 rounded-md bg-neutral-100 dark:bg-neutral-700 px-2 py-1 font-mono text-neutral-700 dark:text-neutral-300">
+                  本地 v{{ store.conflictState.clientVersion }}
+                </span>
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 class="font-bold text-sm">版本冲突 (Version Conflict)</h3>
-            <p class="text-xs text-white/90">
-              其他设备或标签页已更新配置（服务端 v{{ store.conflictState.serverVersion }}，本地 v{{ store.conflictState.clientVersion }}）。
-            </p>
+          <div class="mt-5 flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
+            <button
+              type="button"
+              @click.stop.prevent="store.resolveConflict('remote')"
+              class="min-h-[48px] px-5 rounded-xl text-sm font-medium text-neutral-700 dark:text-neutral-300 bg-neutral-100 dark:bg-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-600 transition-colors"
+            >
+              采用服务端 (放弃本地)
+            </button>
+            <button
+              type="button"
+              @click.stop.prevent="store.resolveConflict('local')"
+              class="min-h-[48px] px-5 rounded-xl text-sm font-medium text-white bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600 transition-colors shadow-sm"
+            >
+              强制本端 (覆盖服务端)
+            </button>
           </div>
         </div>
-        <div class="flex items-center gap-2 w-full sm:w-auto">
-          <button
-            @click="store.resolveConflict('remote')"
-            class="flex-1 sm:flex-none px-4 py-2 bg-white/10 hover:bg-white/20 text-xs font-bold rounded-lg transition-colors border border-white/10"
-          >
-            采用服务端 (放弃本地)
-          </button>
-          <button
-            @click="store.resolveConflict('local')"
-            class="flex-1 sm:flex-none px-4 py-2 bg-white text-red-600 text-xs font-bold rounded-lg hover:bg-red-50 transition-colors shadow-sm"
-          >
-            强制本端 (覆盖服务端)
-          </button>
+      </div>
+    </div>
+  </Transition>
+  <!-- 心跳断过后再次激活且服务端版本不同时，确认是否同步 -->
+  <Transition name="fade">
+    <div
+      v-if="store.syncConfirmModal.show"
+      class="fixed inset-0 z-[130] flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sync-confirm-title"
+    >
+      <div class="absolute inset-0 bg-black/40 backdrop-blur-[2px]" @click.stop />
+      <div
+        class="relative w-full max-w-md rounded-2xl bg-white dark:bg-neutral-800 shadow-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden"
+      >
+        <div class="p-5 sm:p-6">
+          <h2 id="sync-confirm-title" class="font-bold text-base text-neutral-900 dark:text-white">
+            服务端配置已更新
+          </h2>
+          <p class="mt-1.5 text-sm text-neutral-600 dark:text-neutral-400">
+            检测到服务端配置版本 (v{{ store.syncConfirmModal.serverVersion }}) 与当前不同，是否同步为服务端配置？
+          </p>
+          <div class="mt-5 flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
+            <button
+              type="button"
+              @click.stop.prevent="store.dismissSyncConfirm()"
+              class="min-h-[48px] px-5 rounded-xl text-sm font-medium text-neutral-700 dark:text-neutral-300 bg-neutral-100 dark:bg-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-600 transition-colors"
+            >
+              保留本地
+            </button>
+            <button
+              type="button"
+              @click.stop.prevent="store.confirmSyncFromServer()"
+              class="min-h-[48px] px-5 rounded-xl text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors shadow-sm"
+            >
+              同步
+            </button>
+          </div>
         </div>
+      </div>
+    </div>
+  </Transition>
+  <Transition name="slide-down">
+    <div
+      v-if="saveErrorMessage && !store.conflictState.show"
+      class="fixed top-0 inset-x-0 z-[111] bg-amber-500/95 text-white shadow-xl backdrop-blur-md border-b border-amber-400/50 pt-[env(safe-area-inset-top)]"
+    >
+      <div class="max-w-7xl mx-auto px-4 py-2 text-sm font-medium">
+        {{ saveErrorMessage }}
       </div>
     </div>
   </Transition>
@@ -436,6 +640,16 @@ onMounted(() => {
 </template>
 
 <style>
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
 .fade-up-enter-active,
 .fade-up-leave-active {
   transition:

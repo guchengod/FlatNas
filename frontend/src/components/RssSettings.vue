@@ -76,7 +76,7 @@ const saveRss = () => {
     }
   }
 
-  store.saveData(); // Trigger save
+  store.markDirty(); // Trigger save
   editingRss.value = false;
 };
 
@@ -100,13 +100,13 @@ const addCategory = () => {
     feeds: [],
   });
   newCategoryName.value = "";
-  store.saveData();
+  store.markDirty();
 };
 
 const deleteCategory = (id: string) => {
   if (!confirm("确定删除分类？(不会删除订阅源)")) return;
   store.rssCategories = store.rssCategories.filter((c: RssCategory) => c.id !== id);
-  store.saveData();
+  store.markDirty();
 };
 
 const startEditCategory = (c: RssCategory) => {
@@ -119,7 +119,7 @@ const updateCategory = () => {
   const cat = store.rssCategories.find((c: RssCategory) => c.id === editingCategoryId.value);
   if (cat) {
     cat.name = editCategoryName.value.trim();
-    store.saveData();
+    store.markDirty();
   }
   editingCategoryId.value = null;
 };

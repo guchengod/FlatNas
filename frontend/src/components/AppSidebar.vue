@@ -59,7 +59,7 @@ onUnmounted(() => {
 const toggleViewMode = () => {
   viewMode.value = viewMode.value === "bookmarks" ? "groups" : "bookmarks";
   store.appConfig.sidebarViewMode = viewMode.value;
-  if (store.isLogged) store.saveData();
+  if (store.isLogged) store.markDirty();
 };
 
 const scrollToGroup = (groupId: string) => {
@@ -166,7 +166,7 @@ const confirmAddCategory = () => {
     }
   }
 
-  store.saveData();
+  store.markDirty();
   showAddCategoryModal.value = false;
 };
 
@@ -267,7 +267,7 @@ const draggableBookmarkGroups = computed({
         newData.push(defaultCat);
       }
       widget.data = newData;
-      store.saveData();
+      store.markDirty();
     }
   },
 });
@@ -345,7 +345,7 @@ const handleFileUpload = (event: Event) => {
         }
 
         // Save store
-        store.saveData();
+        store.markDirty();
 
         alert(`成功导入 ${newItems.length} 个书签！`);
       } else {
@@ -364,7 +364,7 @@ const handleFileUpload = (event: Event) => {
 const handleDeleteBookmark = (category: BookmarkCategory, itemId: string) => {
   if (!store.isLogged) return;
   category.children = category.children.filter((item) => item.id !== itemId);
-  store.saveData();
+  store.markDirty();
 };
 
 const handleDeleteCategory = (categoryId: string) => {
@@ -377,7 +377,7 @@ const handleDeleteCategory = (categoryId: string) => {
         if (activeCategory.value?.id === categoryId) {
           activeCategory.value = null;
         }
-        store.saveData();
+        store.markDirty();
         return;
       }
     }
@@ -607,7 +607,7 @@ const confirmEditBookmark = async () => {
       const topLevel = data.find((c) => c.id === editingBookmarkId.value);
       if (topLevel) {
         updateItem(topLevel);
-        store.saveData();
+        store.markDirty();
         showEditModal.value = false;
         return;
       }
@@ -632,7 +632,7 @@ const confirmEditBookmark = async () => {
             }
           }
         }
-        store.saveData();
+        store.markDirty();
         showEditModal.value = false;
         return;
       }
@@ -723,7 +723,7 @@ const confirmAddBookmark = async () => {
     icon: icon,
   });
 
-  store.saveData();
+  store.markDirty();
   if (activePath.value.length > 0) {
     const pathIds = activePath.value.map((c) => c.id);
     const newPath = pathIds
@@ -757,7 +757,7 @@ const togglePin = (item: BookmarkItem, parent: BookmarkCategory) => {
     // Let's just keep it simple: unpinning just removes the visual pin.
   }
 
-  store.saveData();
+  store.markDirty();
 };
 
 onMounted(() => {
@@ -1247,7 +1247,7 @@ const toggle = () => {
               class="space-y-1 min-h-[50px]"
               :animation="150"
               group="bookmarks"
-              @end="store.saveData()"
+              @end="store.markDirty()"
             >
               <div
                 v-for="item in currentFolder.children"
@@ -1393,7 +1393,7 @@ const toggle = () => {
           :fallback-on-body="true"
           :disabled="isCollapsed"
           handle=".drag-handle"
-          @end="store.saveData()"
+          @end="store.markDirty()"
           :class="{ 'flex flex-col items-center w-full': isCollapsed }"
         >
           <button

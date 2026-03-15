@@ -306,7 +306,7 @@ watch(
     if (enabled) {
       fetchWeatherForEffect();
       if (weatherTimer) clearInterval(weatherTimer);
-      weatherTimer = setInterval(fetchWeatherForEffect, 60 * 60 * 1000);
+      weatherTimer = setInterval(fetchWeatherForEffect, 2 * 60 * 60 * 1000);
     } else {
       if (weatherTimer) clearInterval(weatherTimer);
       weatherTimer = null;
@@ -351,6 +351,20 @@ const showGroupSettingsModal = ref(false);
 
 const showLoginModal = ref(false);
 const isEditMode = ref(false);
+/** 切换编辑模式；进入编辑时设 layoutEditInProgress，退出时 await 保存后再清空，避免外网竞态导致布局被覆盖 */
+const toggleEditMode = async () => {
+  if (isEditMode.value) {
+    isEditMode.value = false;
+    try {
+      await store.saveData(true);
+    } finally {
+      store.layoutEditInProgress = false;
+    }
+  } else {
+    store.layoutEditInProgress = true;
+    isEditMode.value = true;
+  }
+};
 const activeResizeWidgetId = ref<string | null>(null);
 const currentEditItem = ref<NavItem | null>(null);
 const currentGroupId = ref<string>("");
@@ -384,7 +398,14 @@ watch(
 );
 
 watch(showGroupSettingsModal, (val) => {
+  const wasEditing = isEditMode.value;
   isEditMode.value = val;
+  if (val) {
+    store.layoutEditInProgress = true;
+  } else if (wasEditing) {
+    store.markDirty();
+    store.layoutEditInProgress = false;
+  }
 });
 const isLanMode = ref(false);
 const latency = ref(0);
@@ -395,7 +416,7 @@ const forceMode = computed({
   get: () => networkConfig.value.forceNetworkMode,
   set: (val) => {
     store.appConfig.forceNetworkMode = val;
-    store.saveData();
+    store.markDirty();
   },
 });
 const latencyThresholdMs = computed(() => networkConfig.value.latencyThresholdMs);
@@ -405,6 +426,7 @@ const effectiveIsLan = computed(() => {
   if (forceMode.value === "lan") return true;
   if (forceMode.value === "wan") return false;
   if (forceMode.value === "latency") {
+    if (isLanMode.value) return true;
     if (latency.value > 0) return latency.value < latencyThresholdMs.value;
     return false;
   }
@@ -614,7 +636,7 @@ const draggableWidgets = computed({
         w.type === "sidebar",
     );
     store.widgets = [...newOrder, ...hiddenWidgets];
-    store.saveData();
+    store.markDirty();
   },
 });
 */
@@ -857,7 +879,13 @@ const handleLayoutUpdated = (newLayout: GridLayoutItem[]) => {
     const curY = spec?.y ?? w?.y;
     const curW = spec?.w ?? w?.w ?? w?.colSpan ?? 1;
     const curH = spec?.h ?? w?.h ?? w?.rowSpan ?? 1;
-    if (!w || curX !== l.x || curY !== l.y || curW !== l.w || curH !== l.h) {
+    
+    // 增强检查：在 desktop 模式下，必须确保顶层属性也一致
+    const isDesktop = key === "desktop";
+    const specMismatch = !w || curX !== l.x || curY !== l.y || curW !== l.w || curH !== l.h;
+    const topLevelMismatch = isDesktop && w && (w.x !== l.x || w.y !== l.y || w.w !== l.w || w.h !== l.h);
+
+    if (specMismatch || topLevelMismatch) {
       changed = true;
       break;
     }
@@ -889,7 +917,7 @@ const handleLayoutUpdated = (newLayout: GridLayoutItem[]) => {
       }
     }
   });
-  store.saveData();
+  store.markDirty();
   nextTick(() => {
     isInternalUpdate = false;
   });
@@ -1083,11 +1111,11 @@ const handleScaledLayoutUpdated = (newLayout: GridLayoutItem[]) => {
       );
     });
 
-  if (!isChanged) return;
-  
-  // Update local layout data to reflect compaction
-  layoutData.value = compacted;
-
+  // Update local layout data only when different to avoid redundant writes
+  if (isChanged) {
+    layoutData.value = compacted;
+  }
+  // Always sync to store so drag result is persisted (setter may have updated layoutData already, so isChanged can be false)
   handleLayoutUpdated(compacted);
 };
 
@@ -1254,7 +1282,7 @@ const handleSave = (payload: { item: NavItem; groupId?: string }) => {
       ...widget.data,
       ...dataProps,
     };
-    store.saveData();
+    store.markDirty();
     return;
   }
 
@@ -1307,7 +1335,7 @@ const normalizeDivCardWidgets = () => {
       changed = true;
     }
   });
-  if (changed) store.saveData();
+  if (changed) store.markDirty();
 };
 const addDivCardWidget = () => {
   const newId = `div-card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1348,7 +1376,7 @@ const addDivCardWidget = () => {
   // Sync the calculated position back to the widget in store
   handleLayoutUpdated(updatedLayout);
   
-  store.saveData();
+  store.markDirty();
 };
 const handleDivCardClick = (widget: WidgetConfig) => {
   if (isEditMode.value) {
@@ -1375,7 +1403,7 @@ const deleteDivCardWidget = (id: string) => {
   const newLayout = compactVertical(layoutData.value);
   layoutData.value = newLayout;
   handleLayoutUpdated(newLayout);
-  store.saveData();
+  store.markDirty();
 };
 
 // --- Heartbeat / Polling Mechanism for Layout ---
@@ -1500,9 +1528,8 @@ const handleDockerAction = async (item: NavItem, action: string) => {
   } finally {
     if (action === "update") {
       isUpdating.value.delete(containerId);
-      // Force refresh status immediately after update
-      setTimeout(fetchContainerStatuses, 1000);
-      setTimeout(fetchContainerStatuses, 5000);
+      // Force refresh status after update (single delayed refresh)
+      setTimeout(fetchContainerStatuses, 15000);
     }
   }
 };
@@ -1611,8 +1638,6 @@ const getContainerStatus = (item: NavItem) => {
 
 const fetchContainerStatuses = async () => {
   if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-    if (containerPollTimer) clearTimeout(containerPollTimer);
-    containerPollTimer = null;
     return;
   }
 
@@ -1620,8 +1645,6 @@ const fetchContainerStatuses = async () => {
     g.items.some((item) => !!item.containerId || !!item.containerName),
   );
   if (!hasAnyContainerItems) {
-    if (containerPollTimer) clearTimeout(containerPollTimer);
-    containerPollTimer = null;
     if (Object.keys(containerStatuses.value).length) containerStatuses.value = {};
     if (Object.keys(previousStatsMap.value).length) previousStatsMap.value = {};
     return;
@@ -1813,7 +1836,7 @@ const fetchContainerStatuses = async () => {
         });
 
         if (needsSave) {
-          store.saveData();
+          store.markDirty();
         }
 
         liveContainers.forEach((c) => {
@@ -1870,57 +1893,56 @@ const fetchContainerStatuses = async () => {
 
   // 3. Update State
   containerStatuses.value = { ...containerStatuses.value, ...statusMap };
-
-  // Schedule next poll
-  if (isMounted.value) {
-    containerPollTimer = setTimeout(fetchContainerStatuses, 5000);
-  }
+  // Next poll is driven by dashboard pulse (store), no self-scheduling here.
 };
 
-let containerPollTimer: ReturnType<typeof setTimeout> | null = null;
 const isMounted = ref(false);
 
 const handleContainerVisibilityChange = () => {
   if (!isMounted.value) return;
-  if (document.visibilityState === "hidden") {
-    if (containerPollTimer) clearTimeout(containerPollTimer);
-    containerPollTimer = null;
-    return;
-  }
+  if (document.visibilityState === "hidden") return;
   fetchContainerStatuses();
 };
 
 onMounted(() => {
   isMounted.value = true;
+  store.registerDashboardPulse(fetchContainerStatuses);
   fetchContainerStatuses();
   document.addEventListener("visibilitychange", handleContainerVisibilityChange);
 });
 
 onUnmounted(() => {
   isMounted.value = false;
-  if (containerPollTimer) clearTimeout(containerPollTimer);
+  store.unregisterDashboardPulse(fetchContainerStatuses);
   document.removeEventListener("visibilitychange", handleContainerVisibilityChange);
 });
 
-// 监听 store.groups 变化，一旦出现容器组件，立即启动轮询
-// 这是为了解决页面初始化时 store 数据尚未加载完成，导致 fetchContainerStatuses 提前退出且不再调度的问题
+// 监听 store.groups 变化，一旦出现容器组件，立即拉一次状态（之后由脉冲每 15s 驱动）
 watch(
   () => store.groups,
   () => {
     const hasAny = store.groups.some((g) =>
       g.items.some((item) => !!item.containerId || !!item.containerName),
     );
-    if (hasAny && !containerPollTimer && isMounted.value && document.visibilityState !== "hidden") {
+    if (hasAny && isMounted.value && document.visibilityState !== "hidden") {
       fetchContainerStatuses();
     }
   },
   { deep: true },
 );
 
-const handleAuthAction = () => {
+const handleAuthAction = async () => {
   if (store.isLogged) {
-    store.logout();
+    const wasEditing = isEditMode.value;
     isEditMode.value = false;
+    if (wasEditing) {
+      try {
+        await store.saveData(true);
+      } finally {
+        store.layoutEditInProgress = false;
+      }
+    }
+    store.logout();
   } else {
     showLoginModal.value = true;
   }
@@ -2710,7 +2732,7 @@ onUnmounted(() => {
             showLoginModal = true;
             return;
           }
-          isEditMode = !isEditMode;
+          toggleEditMode();
         }
       "
     />
@@ -2778,7 +2800,7 @@ onUnmounted(() => {
               </button>
               <button
                 v-if="store.isLogged"
-                @click="isEditMode = !isEditMode"
+                @click="toggleEditMode"
                 class="xl:hidden px-3 h-6 rounded-full text-[10px] font-bold transition-all"
                 :class="
                   isEditMode
@@ -2919,7 +2941,7 @@ onUnmounted(() => {
             </button>
             <button
               v-if="store.isLogged"
-              @click="isEditMode = !isEditMode"
+              @click="toggleEditMode"
               class="hidden xl:block pointer-events-auto rounded-lg text-sm font-medium transition-all"
               :class="
                 isEditMode
@@ -2928,6 +2950,21 @@ onUnmounted(() => {
               "
             >
               {{ isEditMode ? "完成" : "编辑" }}
+            </button>
+            <button
+              v-if="store.isLogged && isEditMode"
+              @click="store.saveData(true)"
+              :disabled="store.isSaving"
+              class="hidden xl:flex pointer-events-auto rounded-lg text-sm font-medium transition-all items-center gap-1.5 px-4 py-2"
+              :class="
+                store.hasUnsavedChanges
+                  ? 'bg-amber-500 text-white shadow-sm hover:bg-amber-600'
+                  : 'bg-white/20 text-white/70 hover:bg-white/30'
+              "
+              title="保存配置到服务端"
+            >
+              <span v-if="store.isSaving" class="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              {{ store.isSaving ? "保存中…" : "保存" }}
             </button>
             <button
               v-if="store.isLogged && isEditMode"
@@ -2946,7 +2983,7 @@ onUnmounted(() => {
           :group="{ name: 'pagination-groups', pull: false, put: false }"
           :sort="isEditMode && !searchText"
           :disabled="!isEditMode || !!searchText"
-          @end="() => store.saveData()"
+          @end="() => store.markDirty()"
         >
           <button
             v-for="group in displayGroups"
@@ -3236,7 +3273,7 @@ onUnmounted(() => {
           :animation="300"
           :forceFallback="true"
           :disabled="!isEditMode || isWebPaginationMode"
-          @end="() => store.saveData()"
+          @end="() => store.markDirty()"
           class="pb-20 flex flex-col transition-all"
           :style="{ gap: (store.appConfig.groupGap ?? 30) + 'px' }"
         >
@@ -3352,7 +3389,7 @@ onUnmounted(() => {
             <VueDraggable
               :model-value="group.items"
               @update:model-value="(newItems: NavItem[]) => onGroupItemsChange(group.id, newItems)"
-              @end="() => store.saveData()"
+              @end="() => store.markDirty()"
               group="apps"
               :animation="200"
               :forceFallback="true"
@@ -4038,7 +4075,7 @@ onUnmounted(() => {
     <!-- Delete Confirm Modal -->
     <div
       v-if="showDeleteConfirm"
-      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 pt-[calc(1rem+env(safe-area-inset-top))] pb-[calc(1rem+env(safe-area-inset-bottom))]"
       @click.self="showDeleteConfirm = false"
     >
       <div
@@ -4053,13 +4090,13 @@ onUnmounted(() => {
         <div class="flex justify-end gap-3">
           <button
             @click="showDeleteConfirm = false"
-            class="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-100 font-medium transition-colors"
+            class="px-4 py-2 min-h-[44px] rounded-lg text-gray-600 hover:bg-gray-100 font-medium transition-colors"
           >
             取消
           </button>
           <button
             @click="confirmDelete"
-            class="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 font-medium shadow-sm transition-colors flex items-center gap-1"
+            class="px-4 py-2 min-h-[44px] rounded-lg bg-red-500 text-white hover:bg-red-600 font-medium shadow-sm transition-colors flex items-center gap-1"
           >
             <span>🗑️</span> 删除
           </button>

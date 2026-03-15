@@ -54,7 +54,7 @@ const saveConfig = () => {
   const w = store.widgets.find((item) => item.id === props.widget.id);
   if (w) {
     w.data = { ...w.data, ...formData.value };
-    store.saveData();
+    store.markDirty();
     calculate();
   }
   showConfig.value = false;

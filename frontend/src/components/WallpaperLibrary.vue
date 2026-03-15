@@ -637,7 +637,7 @@ const applyCustomApi = async (type: "pc" | "mobile", apply: boolean = true) => {
         store.appConfig.mobileBackground = backgroundPath;
         store.appConfig.mobileWallpaperConfig = config;
       }
-      store.saveData();
+      store.markDirty();
       alert("设置成功");
     } else {
       await fetchWallpapers();

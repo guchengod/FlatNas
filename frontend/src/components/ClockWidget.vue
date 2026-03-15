@@ -32,7 +32,7 @@ const toggleStyle = () => {
   if (!props.widget.data) props.widget.data = {};
   const nextIndex = (styleIndex.value + 1) % styles.length;
   props.widget.data.style = styles[nextIndex];
-  store.saveData();
+  store.markDirty();
 };
 
 const now = ref(new Date());

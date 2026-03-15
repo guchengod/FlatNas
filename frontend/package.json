@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "vite",
     "server": "go run ../backend",
-    "server:hot": "go run github.com/air-verse/air@latest -c ../backend/.air.toml",
+    "server:hot": "cd ../backend && go run github.com/air-verse/air@latest -c .air.toml",
     "wait-backend": "node -e \"const base=process.env.VITE_BACKEND||'http://127.0.0.1:3000';const target=new URL('/api/system-config',base).toString();const timeoutMs=60000;const intervalMs=500;const start=Date.now();const attempt=async()=>{try{const ctrl=new AbortController();const t=setTimeout(()=>ctrl.abort(),1500);const res=await fetch(target,{signal:ctrl.signal});clearTimeout(t);if(res.ok){process.exit(0);}}catch(e){}if(Date.now()-start>timeoutMs){console.error('Backend health check timed out:',target);process.exit(1);}setTimeout(attempt,intervalMs);};attempt();\"",
     "start": "run-p server \"wait-backend && dev\"",
     "start:hot": "run-p server:hot \"wait-backend && dev\"",
@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@types/dompurify": "^3.0.5",
+    "@types/pako": "^2.0.4",
     "@types/prismjs": "^1.26.5",
     "@types/socket.io-client": "^1.4.32",
     "@types/uuid": "^10.0.0",
@@ -36,6 +37,7 @@
     "grid-layout-plus": "^1.1.1",
     "idb": "^8.0.3",
     "lunar-javascript": "^1.7.7",
+    "pako": "^2.1.0",
     "pinia": "^3.0.4",
     "prismjs": "^1.30.0",
     "smooth-corners": "^1.1.0",

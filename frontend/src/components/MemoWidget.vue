@@ -21,6 +21,7 @@ const CONFIG = {
   POLL_WEAK_NETWORK: 20000,
   BROADCAST_THROTTLE: 200,
   BROADCAST_RETRY_LIMIT: 3,
+  CONFLICT_PROMPT_COOLDOWN: 8000,
 };
 
 // --- Sync State ---
@@ -168,12 +169,29 @@ const buildPayload = () => ({
   mode: mode.value,
 });
 
+const buildConflictSignature = (content: string, serverTs: number, nextMode: string) =>
+  `${serverTs}|${nextMode}|${content.length}|${content.slice(0, 64)}`;
+
 let serverSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+let conflictRetryTimer: ReturnType<typeof setTimeout> | null = null;
+const conflictCooldownUntil = ref(0);
+const lastConflictSignature = ref("");
 const saveToServer = async (immediate = false, keepalive = false) => {
   if (!store.isLogged) return;
   // If conflict is active, block further auto-saves until resolved
   if (conflictState.value.hasConflict && !immediate) return;
+  if (!immediate && Date.now() < conflictCooldownUntil.value) {
+    if (conflictRetryTimer) clearTimeout(conflictRetryTimer);
+    const wait = Math.max(0, conflictCooldownUntil.value - Date.now()) + 50;
+    conflictRetryTimer = setTimeout(() => {
+      conflictRetryTimer = null;
+      if (!conflictState.value.hasConflict) {
+        void saveToServer(true);
+      }
+    }, wait);
+    return;
+  }
 
   const id = props.widget.id;
   if (!id) return;
@@ -200,18 +218,78 @@ const saveToServer = async (immediate = false, keepalive = false) => {
       .then(async (res) => {
         const data = await res.json().catch(() => null);
         if (res.status === 409) {
-          if (data?.data) {
-            // Fix Risk 1: 409 Conflict Handling
-            // Instead of silent overwrite, enter conflict state
-            conflictState.value = {
-              hasConflict: true,
-              remoteData: data.data,
-            };
-            syncState.value = "conflict";
-            toastMessage.value = "检测到版本冲突，请选择解决方案";
-            showToast.value = true;
-            // Do NOT auto-hide toast in conflict state
+          if (!data?.data) return;
+          const remotePayload = data.data as WidgetConfig["data"];
+          const remoteParsed = parsePayload(remotePayload);
+          const sameContent = remoteParsed.content === localData.value;
+          const sameMode = !remoteParsed.mode || remoteParsed.mode === mode.value;
+
+          if (sameContent && sameMode) {
+            if (remoteParsed.serverTs) {
+              serverTs.value = remoteParsed.serverTs;
+            }
+            conflictState.value = { hasConflict: false, remoteData: null };
+            syncState.value = "idle";
+            showToast.value = false;
+            return;
           }
+
+          if (remoteParsed.serverTs) {
+            serverTs.value = remoteParsed.serverTs;
+            const retryPayload = buildPayload();
+            const retryRes = await fetch(`/api/memo/${id}`, {
+              method: "PUT",
+              headers: {
+                ...store.getHeaders(),
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(retryPayload),
+              keepalive,
+            });
+            const retryData = await retryRes.json().catch(() => null);
+            if (retryRes.ok) {
+              if (retryData?.data) {
+                applyRemotePayload(retryData.data);
+              }
+              conflictState.value = { hasConflict: false, remoteData: null };
+              syncState.value = "idle";
+              showToast.value = false;
+              return;
+            }
+          }
+
+          const signature = buildConflictSignature(
+            remoteParsed.content,
+            remoteParsed.serverTs,
+            remoteParsed.mode || mode.value,
+          );
+          const now = Date.now();
+          if (
+            signature === lastConflictSignature.value &&
+            now < conflictCooldownUntil.value
+          ) {
+            syncState.value = "cooldown";
+            if (conflictRetryTimer) clearTimeout(conflictRetryTimer);
+            const wait = Math.max(0, conflictCooldownUntil.value - now) + 50;
+            conflictRetryTimer = setTimeout(() => {
+              conflictRetryTimer = null;
+              if (!conflictState.value.hasConflict) {
+                void saveToServer(true);
+              }
+            }, wait);
+            return;
+          }
+
+          lastConflictSignature.value = signature;
+          conflictCooldownUntil.value = now + CONFIG.CONFLICT_PROMPT_COOLDOWN;
+
+          conflictState.value = {
+            hasConflict: true,
+            remoteData: remotePayload,
+          };
+          syncState.value = "conflict";
+          toastMessage.value = "检测到版本冲突，请选择解决方案";
+          showToast.value = true;
           return;
         }
         if (!res.ok) return;
@@ -243,6 +321,17 @@ const saveToServer = async (immediate = false, keepalive = false) => {
 const resolveConflict = (action: 'local' | 'remote') => {
   if (!conflictState.value.hasConflict || !conflictState.value.remoteData) return;
   const remote = conflictState.value.remoteData;
+  const remoteParsed = parsePayload(remote);
+  lastConflictSignature.value = buildConflictSignature(
+    remoteParsed.content,
+    remoteParsed.serverTs,
+    remoteParsed.mode || mode.value,
+  );
+  conflictCooldownUntil.value = Date.now() + CONFIG.CONFLICT_PROMPT_COOLDOWN;
+  if (conflictRetryTimer) {
+    clearTimeout(conflictRetryTimer);
+    conflictRetryTimer = null;
+  }
   if (action === 'local') {
     // Keep local content, but update serverTs to allow overwrite
     serverTs.value = remote.server_ts;
@@ -283,14 +372,14 @@ let idleCheckTimer: ReturnType<typeof setInterval> | null = null;
 let currentPollInterval = CONFIG.POLL_ACTIVE_INTERVAL;
 let pollRetryCount = 0;
 
-const pollRemote = async () => {
+const pollRemote = async (force = false) => {
   // Fix Risk 3: Check isSaving to avoid race condition
   if (!store.isLogged || !store.isConnected || isEditing.value || isSaving.value || syncState.value !== "idle") return;
   const id = props.widget.id;
   if (!id) return;
   
   // Fix Risk 2: Skip polling if WebSocket is connected and healthy
-  if (store.socket?.connected) {
+  if (store.socket?.connected && !force) {
     scheduleNextPoll();
     return;
   }
@@ -677,11 +766,11 @@ onMounted(() => {
   
   if (store.isLogged) {
     // Fix Risk 2: Listen to WebSocket events
-    if (store.socket) {
+    if (store.socket && typeof store.socket.on === "function") {
       store.socket.on("memo:updated", handleSocketUpdate);
     }
     // Initial fetch to align state
-    pollRemote();
+    pollRemote(true);
   }
   
   refreshVersions();
@@ -693,6 +782,7 @@ onUnmounted(() => {
   if (serverSaveTimer) clearTimeout(serverSaveTimer);
   if (autoSaveTimer) clearTimeout(autoSaveTimer);
   if (broadcastTimer) clearTimeout(broadcastTimer);
+  if (conflictRetryTimer) clearTimeout(conflictRetryTimer);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   document.removeEventListener("pointerdown", handleDocPointerDown);
   
@@ -704,7 +794,7 @@ onUnmounted(() => {
   document.removeEventListener("touchstart", handleUserActivity);
   window.removeEventListener("beforeunload", handleBeforeUnload);
   
-  if (store.socket) {
+  if (store.socket && typeof store.socket.off === "function") {
     store.socket.off("memo:updated", handleSocketUpdate);
   }
   
@@ -863,7 +953,7 @@ onUnmounted(() => {
     <!-- Conflict Resolution Overlay -->
     <div
       v-if="conflictState.hasConflict"
-      class="absolute inset-x-0 bottom-0 z-40 bg-red-50/95 border-t border-red-200 p-3 backdrop-blur-sm flex flex-col gap-2 shadow-lg"
+      class="absolute inset-x-0 bottom-0 z-40 bg-red-50/95 border-t border-red-200 p-2 sm:p-3 backdrop-blur-sm flex flex-col gap-2 shadow-lg"
     >
       <div class="text-xs text-red-600 font-bold flex items-center gap-2">
         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -871,19 +961,19 @@ onUnmounted(() => {
         </svg>
         <span>检测到版本冲突 (Version Conflict)</span>
       </div>
-      <p class="text-[10px] text-red-500 leading-tight">
+      <p class="text-[11px] text-red-500 leading-tight">
         云端存在更新的版本。请选择保留您的本地更改(将覆盖云端)，还是放弃本地更改使用云端版本。
       </p>
       <div class="flex gap-2 mt-1">
         <button
           @click="resolveConflict('local')"
-          class="flex-1 px-2 py-1.5 bg-white border border-red-200 text-red-600 text-xs font-medium rounded hover:bg-red-50 transition-colors"
+          class="flex-1 px-3 py-2 min-h-[44px] bg-white border border-red-200 text-red-600 text-xs font-medium rounded hover:bg-red-50 transition-colors"
         >
           保留本地 (Overwrite Remote)
         </button>
         <button
           @click="resolveConflict('remote')"
-          class="flex-1 px-2 py-1.5 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 transition-colors"
+          class="flex-1 px-3 py-2 min-h-[44px] bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 transition-colors"
         >
           使用云端 (Discard Local)
         </button>

@@ -301,7 +301,7 @@ const saveConfig = () => {
   props.widget.data.city = configForm.value.city;
   // eslint-disable-next-line vue/no-mutating-props
   props.widget.data.apiKey = configForm.value.apiKey;
-  store.saveData();
+  store.markDirty();
   isConfiguring.value = false;
   fetchWeather();
 };
@@ -321,7 +321,7 @@ const formatWeek = (week: string) => weekMap[week] || week;
 onMounted(init);
 
 // Auto refresh every hour
-const timer = setInterval(fetchWeather, 3600000);
+const timer = setInterval(fetchWeather, 2 * 60 * 60 * 1000);
 
 onUnmounted(() => {
   clearInterval(timer);

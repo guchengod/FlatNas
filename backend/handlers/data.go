@@ -243,6 +243,27 @@ func GetData(c *gin.Context) {
 	c.JSON(http.StatusOK, userData)
 }
 
+// GetVersion 返回当前用户数据的版本号，用于前端激活时轻量检查是否需同步
+func GetVersion(c *gin.Context) {
+	username := c.GetString("username")
+	if username == "" {
+		username = "admin"
+	}
+	var sysConfig models.SystemConfig
+	_ = utils.ReadJSON(config.SystemConfigFile, &sysConfig)
+	userFile := filepath.Join(config.UsersDir, username+".json")
+	if username == "admin" && sysConfig.AuthMode == "single" {
+		userFile = filepath.Join(config.DataDir, "data.json")
+	}
+	var userData map[string]interface{}
+	if err := utils.ReadJSON(userFile, &userData); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User data not found"})
+		return
+	}
+	v := normalizeVersion(userData["version"])
+	c.JSON(http.StatusOK, gin.H{"version": v})
+}
+
 func GetWidget(c *gin.Context) {
 	username := c.GetString("username")
 	if username == "" {
@@ -502,6 +523,7 @@ func SaveMemo(c *gin.Context) {
 }
 
 func SaveData(c *gin.Context) {
+	start := time.Now() // 记录开始时间，监控慢请求
 	username := c.GetString("username")
 	if username == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
@@ -511,6 +533,7 @@ func SaveData(c *gin.Context) {
 	// 1. Bind to map to capture EVERYTHING sent by frontend
 	var payload map[string]interface{}
 	if err := c.ShouldBindJSON(&payload); err != nil {
+		log.Printf("SaveData 解析 JSON 失败 user=%s err=%v elapsed=%dms", username, err, time.Since(start).Milliseconds())
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
@@ -584,8 +607,17 @@ func SaveData(c *gin.Context) {
 	}
 
 	if err := utils.WriteJSON(userFile, payload); err != nil {
+		log.Printf("SaveData 写入文件失败 user=%s file=%s err=%v elapsed=%dms", username, userFile, err, time.Since(start).Milliseconds())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save data"})
 		return
+	}
+
+	elapsed := time.Since(start).Milliseconds()
+	// 慢请求告警（超过 5 秒）
+	if elapsed > 5000 {
+		log.Printf("SaveData 慢请求告警 user=%s elapsed=%dms version=%d", username, elapsed, newVersion)
+	} else {
+		log.Printf("SaveData 成功 user=%s elapsed=%dms version=%d", username, elapsed, newVersion)
 	}
 
 	if socketServer != nil {

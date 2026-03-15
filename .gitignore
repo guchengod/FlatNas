@@ -153,3 +153,7 @@ win/
 *.tar.gz
 flatnas-helper/
 
+# Local / Dev (not shipped in Docker)
+go/
+docs/
+

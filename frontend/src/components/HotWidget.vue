@@ -14,7 +14,7 @@ interface HotItem {
 }
 
 interface TabConfig {
-  id: "weibo" | "news" | "zhihu" | "bilibili";
+  id: "weibo" | "news" | "bilibili";
   label: string;
   icon: string;
   activeClass: string;
@@ -23,12 +23,12 @@ interface TabConfig {
 }
 
 interface HotDataPayload {
-  type?: "weibo" | "news" | "zhihu" | "bilibili";
+  type?: "weibo" | "news" | "bilibili";
   data?: HotItem[];
 }
 
 interface HotErrorPayload {
-  type?: "weibo" | "news" | "zhihu" | "bilibili";
+  type?: "weibo" | "news" | "bilibili";
   error?: string;
 }
 
@@ -50,14 +50,6 @@ const tabs = ref<TabConfig[]>([
     indexClass: "text-white bg-white/15",
   },
   {
-    id: "zhihu",
-    label: "知乎",
-    icon: "🧠",
-    activeClass: "text-white bg-white/15",
-    barClass: "bg-white/60",
-    indexClass: "text-white bg-white/15",
-  },
-  {
     id: "bilibili",
     label: "B站",
     icon: "📺",
@@ -71,7 +63,7 @@ const tabs = ref<TabConfig[]>([
 const cache = ref<Record<string, { data: HotItem[]; ts: number }>>({});
 const CACHE_TTL = 15 * 60 * 1000; // 缓存 15 分钟
 
-const activeTab = ref<"weibo" | "news" | "zhihu" | "bilibili">("weibo");
+const activeTab = ref<"weibo" | "news" | "bilibili">("weibo");
 const list = ref<HotItem[]>([]);
 const loading = ref(false);
 const HOT_FETCH_TIMEOUT_MS = 8000;
@@ -79,7 +71,7 @@ let activeRequestId = 0;
 let activeCleanup: (() => void) | null = null;
 
 // 获取数据 (带缓存优化)
-const fetchHot = async (type: "weibo" | "news" | "zhihu" | "bilibili", force = false) => {
+const fetchHot = async (type: "weibo" | "news" | "bilibili", force = false) => {
   activeCleanup?.();
   activeTab.value = type;
   const requestId = ++activeRequestId;

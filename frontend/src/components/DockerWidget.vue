@@ -763,7 +763,7 @@ const toggleAutoUpdateDisabled = (id: string, disabled: boolean) => {
   }
 
   widgetInStore.data.disabledContainers = Array.from(list);
-  store.saveData();
+  store.markDirty();
 
   showToast(disabled ? "已禁止该容器自动升级" : "已恢复该容器自动升级");
 };
@@ -879,7 +879,7 @@ const savePublicHost = (c: DockerContainer) => {
       : {};
   map[c.Id] = publicHostTemp.value.trim();
   (w.data as Record<string, unknown>).publicHosts = map;
-  store.saveData();
+  store.markDirty();
   editingPublicId.value = null;
 };
 const cancelPublicHost = () => {

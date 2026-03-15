@@ -69,7 +69,7 @@ const saveConfig = () => {
       w.data.isRunning = false; // Stop on time change? Or keep running? Stop is safer.
     }
 
-    store.saveData();
+    store.markDirty();
     calculate();
   }
   showConfig.value = false;
@@ -258,7 +258,7 @@ const toggleTimer = () => {
     }
     w.data.isRunning = true;
   }
-  store.saveData();
+  store.markDirty();
   calculate(); // Immediate update
 };
 
@@ -269,7 +269,7 @@ const resetTimer = () => {
   w.data.isRunning = false;
   w.data.totalPauseDuration = 0;
   w.data.pauseStartTime = null;
-  store.saveData();
+  store.markDirty();
   calculate();
 };
 

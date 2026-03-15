@@ -6,13 +6,12 @@ import vueDevTools from "vite-plugin-vue-devtools";
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const isWindows = process.platform === "win32";
-  const winPublicDir = fileURLToPath(new URL("../server/public", import.meta.url));
   return ({
     base: "/",
-    publicDir: isWindows ? "../server/public" : "../server/public",
+    publicDir: isWindows ? "../win/server/public" : "../debian/server/public",
     build: {
       sourcemap: false,
-      outDir: isWindows ? winPublicDir : "dist",
+      outDir: isWindows ? fileURLToPath(new URL("../win/server/public", import.meta.url)) : "dist",
       emptyOutDir: true,
     },
     plugins: [vue(), mode === "development" && vueDevTools()],

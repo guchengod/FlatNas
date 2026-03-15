@@ -62,7 +62,7 @@ const applyLatencyThreshold = async () => {
   if (!v.ok || typeof v.value !== "number") return;
   store.appConfig.latencyThresholdMs = v.value;
   latencyThresholdTouched.value = false;
-  await store.saveData(true);
+  store.markDirty();
   latencyThresholdAppliedToast.value = `已生效：${v.value} ms`;
   if (latencyThresholdToastTimer) window.clearTimeout(latencyThresholdToastTimer);
   latencyThresholdToastTimer = window.setTimeout(() => {
@@ -82,7 +82,7 @@ const onLatencyThresholdBlur = async () => {
 const resetLatencyThreshold = async () => {
   store.appConfig.latencyThresholdMs = DEFAULT_LATENCY_THRESHOLD_MS;
   syncLatencyThresholdDraft();
-  await store.saveData(true);
+  store.markDirty();
   latencyThresholdAppliedToast.value = `已重置：${DEFAULT_LATENCY_THRESHOLD_MS} ms`;
   if (latencyThresholdToastTimer) window.clearTimeout(latencyThresholdToastTimer);
   latencyThresholdToastTimer = window.setTimeout(() => {
@@ -119,12 +119,17 @@ const applyDefaultNetworkRules = async () => {
   store.appConfig.networkRules = existing
     ? `${existing}\n${DEFAULT_NETWORK_RULES}`
     : DEFAULT_NETWORK_RULES;
-  await store.saveData(true);
+  store.markDirty();
 };
 
 const resetNetworkRules = async () => {
   store.appConfig.networkRules = DEFAULT_NETWORK_RULES;
-  await store.saveData(true);
+  store.markDirty();
+};
+
+const toggleWhitelistLatencyMode = async () => {
+  store.appConfig.forceNetworkMode = store.appConfig.forceNetworkMode === "latency" ? "auto" : "latency";
+  store.markDirty();
 };
 
 const ensureNetworkPresets = () => {
@@ -153,7 +158,7 @@ const toggleNetworkPreset = async (key: string) => {
   ensureNetworkPresets();
   const current = !!store.appConfig.networkPresets?.[key as keyof NonNullable<typeof store.appConfig.networkPresets>];
   store.appConfig.networkPresets![key as keyof NonNullable<typeof store.appConfig.networkPresets>] = !current;
-  await store.saveData(true);
+  store.markDirty();
 };
 
 const showWallpaperLibrary = ref(false);
@@ -172,7 +177,7 @@ const daylightMaskPercent = computed({
     const v = Number.isFinite(val) ? val : 50;
     const clamped = Math.min(100, Math.max(0, v));
     store.appConfig.daylightMask = clamped / 100;
-    store.saveData();
+    store.markDirty();
   },
 });
 const musicVolume = useStorage<number>("flat-nas-music-volume", 0.7);
@@ -225,7 +230,7 @@ const solidBackgroundColorProxy = computed({
   get: () => store.appConfig.solidBackgroundColor || "#f3f4f6",
   set: (val: string) => {
     store.appConfig.solidBackgroundColor = val;
-    store.saveData();
+    store.markDirty();
   },
 });
 
@@ -243,7 +248,7 @@ const setSolidColorAsWallpaper = () => {
     const dataUrl = canvas.toDataURL("image/png");
     store.appConfig.background = dataUrl;
     store.appConfig.solidBackgroundColor = "";
-    store.saveData();
+    store.markDirty();
   }
 };
 
@@ -256,7 +261,7 @@ const handleWallpaperSelect = (payload: { url: string; type: string } | string) 
   } else {
     store.appConfig.background = url;
   }
-  store.saveData();
+  store.markDirty();
 };
 
 const activeTab = ref("style");
@@ -319,7 +324,7 @@ const confirmTempInput = (w: WidgetConfig, field: string, key: string) => {
   if (tempInputs.value[key] !== undefined) {
     if (!w.data) w.data = {};
     w.data[field] = tempInputs.value[key];
-    store.saveData();
+    store.markDirty();
     // Clear temp input so it falls back to the saved value
     delete tempInputs.value[key];
   }
@@ -376,7 +381,7 @@ const setMusicSize = (cols: number, rows: number) => {
       layouts: newLayouts,
     };
     store.widgets = [...store.widgets]; // Force reactivity for GridPanel watcher
-    store.saveData();
+    store.markDirty();
   }
 };
 
@@ -427,7 +432,7 @@ const testMusicAuth = async () => {
           console.error("Failed to fetch profile", e);
         }
 
-        store.saveData();
+        store.markDirty();
         testMusicAuthResult.value = { success: true, message: "登录成功" };
       } else {
         testMusicAuthResult.value = { success: false, message: "登录失败：未获取到 Token" };
@@ -480,7 +485,7 @@ const updateDisplayName = async () => {
       // Update local profile
       if (!musicWidget.value.data.userProfile) musicWidget.value.data.userProfile = updated;
       musicWidget.value.data.userProfile.displayName = updated.displayName || nextName;
-      store.saveData();
+      store.markDirty();
       // alert("昵称修改成功");
       showRenameModal.value = false;
     } else {
@@ -555,7 +560,12 @@ const openMarketplace = () => {
 
 const setDevMarketplaceUrl = () => {
   store.appConfig.marketplaceListUrl = "http://localhost:5174/";
-  store.saveData();
+  store.markDirty();
+};
+
+const openMarketplaceInNewWindow = () => {
+  const url = (store.appConfig.marketplaceListUrl || "http://qdnas.icu:23111/").trim();
+  window.open(url, "_blank", "noopener,noreferrer");
 };
 
 const passwordInput = ref("");
@@ -566,7 +576,7 @@ const toggleDockerMock = (checked: boolean) => {
   if (w) {
     if (!w.data) w.data = {};
     w.data.useMock = checked;
-    store.saveData();
+    store.markDirty();
   }
 };
 
@@ -579,7 +589,7 @@ const confirmRemoveWidget = () => {
   const index = store.widgets.findIndex((w) => w.id === widgetToDeleteId.value);
   if (index > -1) {
     store.widgets.splice(index, 1);
-    store.saveData();
+    store.markDirty();
   }
   showDeleteWidgetConfirm.value = false;
   widgetToDeleteId.value = "";
@@ -778,7 +788,7 @@ const handleChangePassword = () => {
   if (!newPasswordInput.value || newPasswordInput.value.length < 4) return alert("密码至少4位");
   requestAuth(async () => {
     store.changePassword(newPasswordInput.value);
-    await store.saveData(true);
+    store.markDirty();
     alert("密码修改成功");
     newPasswordInput.value = "";
   }, "请输入当前密码以确认修改");
@@ -789,7 +799,7 @@ const onMobileDockerDisplayChange = (e: Event) => {
   const w = dockerWidget.value;
   if (w) {
     w.hideOnMobile = !checked;
-    store.saveData();
+    store.markDirty();
   }
 };
 
@@ -1129,7 +1139,7 @@ const restoreMissingWidgets = () => {
   });
 
   if (addedCount > 0) {
-    store.saveData();
+    store.markDirty();
     alert(`已恢复 ${addedCount} 个缺失的组件`);
   } else {
     alert("未发现缺失的核心组件");
@@ -1151,7 +1161,7 @@ const addCustomCssWidget = () => {
     rowSpan: 1,
     isPublic: true,
   });
-  store.saveData();
+  store.markDirty();
 };
 
 const addAmapWeatherWidget = () => {
@@ -1165,7 +1175,7 @@ const addAmapWeatherWidget = () => {
     rowSpan: 1,
     isPublic: true,
   });
-  store.saveData();
+  store.markDirty();
   alert("已添加高德天气组件，请在组件上配置 API Key");
 };
 
@@ -1180,7 +1190,7 @@ const addMusicWidget = () => {
     rowSpan: 1,
     isPublic: true,
   });
-  store.saveData();
+  store.markDirty();
 };
 
 const enableDockerWidget = () => {
@@ -1196,10 +1206,10 @@ const enableDockerWidget = () => {
   const exists = store.widgets.find((w) => w.type === "docker");
   if (!exists) {
     store.widgets.push(def);
-    store.saveData();
+    store.markDirty();
   } else {
     exists.enable = true;
-    store.saveData();
+    store.markDirty();
   }
 };
 
@@ -1208,7 +1218,7 @@ const toggleSystemStatusMock = (checked: boolean) => {
   if (w) {
     if (!w.data) w.data = {};
     w.data.useMock = checked;
-    store.saveData();
+    store.markDirty();
   }
 };
 
@@ -1225,10 +1235,10 @@ const enableSystemStatusWidget = () => {
   const exists = store.widgets.find((w) => w.type === "system-status");
   if (!exists) {
     store.widgets.push(def);
-    store.saveData();
+    store.markDirty();
   } else {
     exists.enable = true;
-    store.saveData();
+    store.markDirty();
   }
 };
 
@@ -1237,14 +1247,14 @@ const onMobileSystemStatusDisplayChange = (e: Event) => {
   const w = systemStatusWidget.value;
   if (w) {
     w.hideOnMobile = !checked;
-    store.saveData();
+    store.markDirty();
   }
 };
 
 const handleExport = async () => {
   try {
     // 强制立即保存，确保后端数据也是最新的
-    await store.saveData(true);
+    store.markDirty();
 
     const backupData = {
       items: store.items,
@@ -1521,7 +1531,7 @@ const normalizeFileTransferWidgets = () => {
     changed = true;
   }
 
-  if (changed) store.saveData();
+  if (changed) store.markDirty();
 };
 
 // 修复：移除 computed 中的副作用，改用 onMounted 初始化
@@ -1545,7 +1555,7 @@ const addIframeWidget = () => {
     rowSpan: 2,
     isPublic: true,
   });
-  store.saveData();
+  store.markDirty();
 };
 
 const addCountdownWidget = () => {
@@ -1563,7 +1573,7 @@ const addCountdownWidget = () => {
     rowSpan: 1,
     isPublic: true,
   });
-  store.saveData();
+  store.markDirty();
 };
 
 const addCountUpWidget = () => {
@@ -1584,7 +1594,7 @@ const addCountUpWidget = () => {
     rowSpan: 1,
     isPublic: true,
   });
-  store.saveData();
+  store.markDirty();
 };
 
 const removeWidget = (id: string) => {
@@ -1863,7 +1873,7 @@ watch(activeTab, (val) => {
                   <div class="border border-gray-200 rounded-xl p-2 bg-white/60">
                     <IconUploader
                       v-model="store.appConfig.background"
-                      @update:modelValue="store.saveData()"
+                      @update:modelValue="store.markDirty()"
                       :crop="false"
                       :previewStyle="{
                         filter: `blur(${store.appConfig.backgroundBlur ?? 0}px)`,
@@ -1878,7 +1888,7 @@ watch(activeTab, (val) => {
                         v-if="store.appConfig.background"
                         @click="
                           store.appConfig.background = '';
-                          store.saveData();
+                          store.markDirty();
                         "
                         class="text-xs text-red-500 hover:text-red-600 px-2 py-1 rounded bg-red-50 hover:bg-red-100 transition-colors"
                       >
@@ -1926,7 +1936,7 @@ watch(activeTab, (val) => {
                               store.appConfig.daylightModeEnabled = (
                                 e.target as HTMLInputElement
                               ).checked;
-                              store.saveData();
+                              store.markDirty();
                             }
                           "
                         />
@@ -1951,7 +1961,7 @@ watch(activeTab, (val) => {
                             store.appConfig.weatherEffectEnabled = (
                               e.target as HTMLInputElement
                             ).checked;
-                            store.saveData();
+                            store.markDirty();
                           }
                         "
                       />
@@ -1971,7 +1981,7 @@ watch(activeTab, (val) => {
                     />
                     <input
                       v-model="store.appConfig.solidBackgroundColor"
-                      @change="store.saveData()"
+                      @change="store.markDirty()"
                       type="text"
                       placeholder="#f3f4f6"
                       class="flex-1 px-2 py-2 border border-gray-200 rounded-xl focus:border-gray-900 outline-none text-sm"
@@ -1979,7 +1989,7 @@ watch(activeTab, (val) => {
                     <button
                       @click="
                         store.appConfig.solidBackgroundColor = '';
-                        store.saveData();
+                        store.markDirty();
                       "
                       class="px-3 h-8 rounded-lg bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-500 transition-colors text-xs font-medium"
                       title="清除纯色背景"
@@ -2443,7 +2453,7 @@ watch(activeTab, (val) => {
                               @change="
                                 (e) => {
                                   w.hideOnMobile = !(e.target as HTMLInputElement).checked;
-                                  store.saveData();
+                                  store.markDirty();
                                 }
                               " />
                             <div
@@ -2459,7 +2469,7 @@ watch(activeTab, (val) => {
                             ><input
                               type="checkbox"
                               v-model="store.appConfig.autoPlayMusic"
-                              @change="store.saveData()"
+                              @change="store.markDirty()"
                               class="sr-only peer" />
                             <div
                               class="w-7 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"
@@ -2544,7 +2554,7 @@ watch(activeTab, (val) => {
                             @input="
                               (e) => {
                                 w.opacity = parseFloat((e.target as HTMLInputElement).value);
-                                store.saveData();
+                                store.markDirty();
                               }
                             "
                             class="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-400"
@@ -2560,10 +2570,10 @@ watch(activeTab, (val) => {
                                 @input="
                                   (e) => {
                                     w.textColor = (e.target as HTMLInputElement).value;
-                                    store.saveData();
+                                    store.markDirty();
                                   }
                                 "
-                                @change="store.saveData()"
+                                @change="store.markDirty()"
                                 class="w-5 h-5 p-0 border-0 rounded-full cursor-pointer overflow-hidden shadow-sm"
                                 title="选择颜色"
                               />
@@ -2571,7 +2581,7 @@ watch(activeTab, (val) => {
                                 v-if="w.textColor"
                                 @click.stop="
                                   w.textColor = undefined;
-                                  store.saveData();
+                                  store.markDirty();
                                 "
                                 class="text-[10px] text-red-400 hover:text-red-600"
                                 title="重置颜色"
@@ -2727,7 +2737,7 @@ watch(activeTab, (val) => {
                             @change="
                               (e) => {
                                 w.hideOnMobile = !(e.target as HTMLInputElement).checked;
-                                store.saveData();
+                                store.markDirty();
                               }
                             " />
                           <div
@@ -2743,7 +2753,7 @@ watch(activeTab, (val) => {
                           ><input
                             type="checkbox"
                             v-model="store.appConfig.autoPlayMusic"
-                            @change="store.saveData()"
+                            @change="store.markDirty()"
                             class="sr-only peer" />
                           <div
                             class="w-7 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"
@@ -2837,7 +2847,7 @@ watch(activeTab, (val) => {
                           if ((e.target as HTMLInputElement).checked) enableSystemStatusWidget();
                           else if (systemStatusWidget) {
                             systemStatusWidget.enable = false;
-                            store.saveData();
+                            store.markDirty();
                           }
                         }
                       "
@@ -2953,7 +2963,7 @@ watch(activeTab, (val) => {
                           if (dockerWidget) {
                             if (!dockerWidget.data) dockerWidget.data = {};
                             dockerWidget.data.autoUpdate = (e.target as HTMLInputElement).checked;
-                            store.saveData();
+                            store.markDirty();
                           }
                         }
                       "
@@ -2980,7 +2990,7 @@ watch(activeTab, (val) => {
                             1,
                             Math.min(20, Number((e.target as HTMLInputElement).value || 2)),
                           );
-                          store.saveData();
+                          store.markDirty();
                         }
                       }
                     "
@@ -3004,7 +3014,7 @@ watch(activeTab, (val) => {
                             0,
                             Number((e.target as HTMLInputElement).value || 5),
                           );
-                          store.saveData();
+                          store.markDirty();
                         }
                       }
                     "
@@ -3021,7 +3031,7 @@ watch(activeTab, (val) => {
                         if (dockerWidget) {
                           if (!dockerWidget.data) dockerWidget.data = {};
                           dockerWidget.data.lanHost = (e.target as HTMLInputElement).value;
-                          store.saveData();
+                          store.markDirty();
                         }
                       }
                     "
@@ -3100,7 +3110,7 @@ watch(activeTab, (val) => {
                           type="checkbox"
                           v-model="w.isPublic"
                           class="sr-only peer"
-                          @change="store.saveData()" />
+                          @change="store.markDirty()" />
                         <div
                           class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"
                         ></div
@@ -3116,7 +3126,7 @@ watch(activeTab, (val) => {
                           @change="
                             (e) => {
                               w.hideOnMobile = !(e.target as HTMLInputElement).checked;
-                              store.saveData();
+                              store.markDirty();
                             }
                           " />
                         <div
@@ -3131,7 +3141,7 @@ watch(activeTab, (val) => {
                           type="checkbox"
                           v-model="w.enable"
                           class="sr-only peer"
-                          @change="store.saveData()" />
+                          @change="store.markDirty()" />
                         <div
                           class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500"
                         ></div
@@ -3149,7 +3159,7 @@ watch(activeTab, (val) => {
                       <div style="display: none">
                         <ProxyToggle
                           v-model="w.data.useProxy"
-                          @update:model-value="store.saveData()"
+                          @update:model-value="store.markDirty()"
                         />
                       </div>
                     </div>
@@ -3266,7 +3276,7 @@ watch(activeTab, (val) => {
                           type="checkbox"
                           v-model="w.isPublic"
                           class="sr-only peer"
-                          @change="store.saveData()" />
+                          @change="store.markDirty()" />
                         <div
                           class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"
                         ></div
@@ -3279,7 +3289,7 @@ watch(activeTab, (val) => {
                           type="checkbox"
                           v-model="w.enable"
                           class="sr-only peer"
-                          @change="store.saveData()" />
+                          @change="store.markDirty()" />
                         <div
                           class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500"
                         ></div
@@ -3338,7 +3348,7 @@ watch(activeTab, (val) => {
                           type="checkbox"
                           v-model="w.isPublic"
                           class="sr-only peer"
-                          @change="store.saveData()" />
+                          @change="store.markDirty()" />
                         <div
                           class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"
                         ></div
@@ -3354,7 +3364,7 @@ watch(activeTab, (val) => {
                           @change="
                             (e) => {
                               w.hideOnMobile = !(e.target as HTMLInputElement).checked;
-                              store.saveData();
+                              store.markDirty();
                             }
                           " />
                         <div
@@ -3369,7 +3379,7 @@ watch(activeTab, (val) => {
                           type="checkbox"
                           v-model="w.enable"
                           class="sr-only peer"
-                          @change="store.saveData()" />
+                          @change="store.markDirty()" />
                         <div
                           class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500"
                         ></div
@@ -3447,7 +3457,7 @@ watch(activeTab, (val) => {
                           type="checkbox"
                           v-model="w.isPublic"
                           class="sr-only peer"
-                          @change="store.saveData()" />
+                          @change="store.markDirty()" />
                         <div
                           class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"
                         ></div
@@ -3463,7 +3473,7 @@ watch(activeTab, (val) => {
                           @change="
                             (e) => {
                               w.hideOnMobile = !(e.target as HTMLInputElement).checked;
-                              store.saveData();
+                              store.markDirty();
                             }
                           " />
                         <div
@@ -3478,7 +3488,7 @@ watch(activeTab, (val) => {
                           type="checkbox"
                           v-model="w.enable"
                           class="sr-only peer"
-                          @change="store.saveData()" />
+                          @change="store.markDirty()" />
                         <div
                           class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500"
                         ></div
@@ -3511,9 +3521,23 @@ watch(activeTab, (val) => {
           </div>
 
           <div v-if="activeTab === 'network'" class="p-4 space-y-4">
-            <h4 class="text-base font-bold text-gray-900 border-l-4 border-gray-900 pl-3 mb-4">
-              网络环境判定设置（规则）
-            </h4>
+            <div class="flex items-center justify-between gap-3 mb-4">
+              <h4 class="text-base font-bold text-gray-900 border-l-4 border-gray-900 pl-3">
+                网络环境判定设置（规则）
+              </h4>
+              <button
+                type="button"
+                @click="toggleWhitelistLatencyMode"
+                class="px-3 py-1.5 rounded-lg text-xs font-bold transition-colors border whitespace-nowrap"
+                :class="
+                  store.appConfig.forceNetworkMode === 'latency'
+                    ? 'bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200'
+                    : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                "
+              >
+                {{ store.appConfig.forceNetworkMode === "latency" ? "已启用：白名单+延迟" : "启动：白名单+延迟" }}
+              </button>
+            </div>
 
             <div class="bg-gray-50 border border-gray-100 rounded-xl p-4 space-y-3">
               <div class="flex items-start gap-2">
@@ -3557,7 +3581,7 @@ watch(activeTab, (val) => {
                 <label class="block text-sm font-medium text-gray-700">网络规则（高级）</label>
                 <textarea
                   v-model="store.appConfig.networkRules"
-                  @change="store.saveData()"
+                  @change="store.markDirty()"
                   rows="7"
                   class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-gray-900 outline-none font-mono"
                   placeholder="示例：
@@ -3592,7 +3616,7 @@ ip:100.64."
                 <label class="block text-sm font-medium text-gray-700">旧版白名单（兼容）</label>
                 <textarea
                   v-model="store.appConfig.internalDomains"
-                  @change="store.saveData()"
+                  @change="store.markDirty()"
                   rows="3"
                   class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-gray-900 outline-none font-mono"
                   placeholder="每行一个（旧格式），仍可继续使用"
@@ -3608,7 +3632,7 @@ ip:100.64."
                     type="radio"
                     v-model="store.appConfig.forceNetworkMode"
                     value="auto"
-                    @change="store.saveData()"
+                    @change="store.markDirty()"
                     class="text-gray-900 focus:ring-blue-400 accent-blue-400"
                   />
                   <span class="text-sm text-gray-700">自动判定 (推荐)</span>
@@ -3618,7 +3642,7 @@ ip:100.64."
                     type="radio"
                     v-model="store.appConfig.forceNetworkMode"
                     value="lan"
-                    @change="store.saveData()"
+                    @change="store.markDirty()"
                     class="text-gray-900 focus:ring-blue-400 accent-blue-400"
                   />
                   <span class="text-sm text-gray-700">强制内网</span>
@@ -3628,7 +3652,7 @@ ip:100.64."
                     type="radio"
                     v-model="store.appConfig.forceNetworkMode"
                     value="latency"
-                    @change="store.saveData()"
+                    @change="store.markDirty()"
                     class="text-gray-900 focus:ring-blue-400 accent-blue-400"
                   />
                   <span class="text-sm text-gray-700">延迟判定</span>
@@ -3638,7 +3662,7 @@ ip:100.64."
                     type="radio"
                     v-model="store.appConfig.forceNetworkMode"
                     value="wan"
-                    @change="store.saveData()"
+                    @change="store.markDirty()"
                     class="text-gray-900 focus:ring-blue-400 accent-blue-400"
                   />
 
@@ -3716,34 +3740,53 @@ ip:100.64."
 
             <!-- Component Store Entrance -->
             <div class="bg-gray-50 border border-gray-100 rounded-xl p-4 mb-6">
-              <h4 class="text-base font-bold text-gray-900 mb-4">组件商城</h4>
-              <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                <button
-                  @click="openMarketplace"
-                  class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shrink-0 shadow-sm"
+              <h4 class="text-base font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <span>组件商城</span>
+                <span
+                  class="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full"
+                  >请在内网环境打开</span
                 >
-                  <span class="text-lg leading-none">🛒</span> 进入组件商城
-                </button>
-                <div class="flex-1 relative flex items-center gap-2">
-                  <input
-                    v-model="store.appConfig.marketplaceListUrl"
-                    @change="store.saveData()"
-                    type="text"
-                    placeholder="组件商城地址 (默认 http://qdnas.icu:23111/)"
-                    class="flex-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
-                  />
+              </h4>
+              <div class="space-y-3">
+                <div class="flex flex-col sm:flex-row gap-3">
                   <button
-                    @click="setDevMarketplaceUrl"
-                    class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg transition-colors whitespace-nowrap border border-gray-200"
-                    title="使用本地开发地址 (http://localhost:5174/)"
+                    @click="openMarketplace"
+                    class="flex-1 sm:flex-none px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm"
                   >
-                    填入开发地址
+                    <span class="text-lg leading-none">🛒</span> 进入组件商城
+                  </button>
+                  <button
+                    @click="openMarketplaceInNewWindow"
+                    class="flex-1 sm:flex-none px-6 py-2.5 bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm"
+                    title="如果弹窗无法加载，请使用此方式"
+                  >
+                    <span class="text-lg leading-none">↗</span> 新窗口打开
                   </button>
                 </div>
+
+                <div class="bg-white/50 p-3 rounded-lg border border-gray-100">
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs font-bold text-gray-500 whitespace-nowrap">商城地址</span>
+                    <input
+                      v-model="store.appConfig.marketplaceListUrl"
+                      @change="store.markDirty()"
+                      type="text"
+                      placeholder="默认 http://qdnas.icu:23111/"
+                      class="flex-1 w-full px-3 py-1.5 border border-gray-200 rounded text-xs focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all bg-white"
+                    />
+                    <button
+                      @click="setDevMarketplaceUrl"
+                      class="px-3 py-1.5 bg-white hover:bg-gray-50 text-gray-600 text-xs font-bold rounded border border-gray-200 transition-colors whitespace-nowrap"
+                      title="使用本地开发地址 (http://localhost:5174/)"
+                    >
+                      填入开发地址
+                    </button>
+                  </div>
+                  <p class="text-[10px] text-gray-400 mt-2">
+                    点击上方按钮即可进入商城。若遇到访问问题（如白屏），请尝试使用“新窗口打开”。
+                  </p>
+                </div>
               </div>
-              <p class="text-xs text-gray-500 mt-2">
-                点击按钮将关闭设置窗口并前往组件商城。您可以在右侧输入框修改商城地址。
-              </p>
             </div>
 
             <!-- Music Widget Settings -->
@@ -3775,7 +3818,7 @@ ip:100.64."
                   <label class="block text-xs font-bold text-gray-600 mb-1">API 地址</label>
                   <input
                     v-model="musicWidget.data.apiUrl"
-                    @change="store.saveData()"
+                    @change="store.markDirty()"
                     class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-gray-900 outline-none"
                     placeholder="例如：http://192.168.1.10:3000"
                   />
@@ -3786,7 +3829,7 @@ ip:100.64."
                     <label class="block text-xs font-bold text-gray-600 mb-1">用户名</label>
                     <input
                       v-model="musicWidget.data.username"
-                      @change="store.saveData()"
+                      @change="store.markDirty()"
                       type="text"
                       class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-gray-900 outline-none"
                       placeholder="用户名"
@@ -3797,7 +3840,7 @@ ip:100.64."
                     <label class="block text-xs font-bold text-gray-600 mb-1">密码</label>
                     <input
                       v-model="musicWidget.data.password"
-                      @change="store.saveData()"
+                      @change="store.markDirty()"
                       type="password"
                       class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-gray-900 outline-none"
                       placeholder="密码"
@@ -3883,7 +3926,7 @@ ip:100.64."
                           if (musicWidget && musicWidget.data) {
                             musicWidget.data.token = '';
                             musicWidget.data.userProfile = null;
-                            store.saveData();
+                            store.markDirty();
                             testMusicAuthResult = null;
                           }
                         }
@@ -4797,10 +4840,10 @@ document.querySelector('.card-item').addEventListener('click', () => {
   <!-- Multi-User Warning Modal -->
   <div
     v-if="showMultiUserWarning"
-    class="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+    class="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 pt-[calc(1rem+env(safe-area-inset-top))] pb-[calc(1rem+env(safe-area-inset-bottom))]"
   >
     <div
-      class="bg-white rounded-xl shadow-xl p-6 w-96 border border-gray-100 transform scale-100 animate-fade-in"
+      class="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm border border-gray-100 transform scale-100 animate-fade-in"
     >
       <div class="flex items-center gap-3 mb-4">
         <div class="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-2xl">
@@ -4817,7 +4860,7 @@ document.querySelector('.card-item').addEventListener('click', () => {
       <div class="flex gap-3">
         <button
           @click="showMultiUserWarning = false"
-          class="flex-1 px-4 py-2.5 bg-gray-100 text-gray-600 rounded-lg text-sm font-bold hover:bg-gray-200 transition-colors"
+          class="flex-1 px-4 py-2.5 min-h-[44px] bg-gray-100 text-gray-600 rounded-lg text-sm font-bold hover:bg-gray-200 transition-colors"
         >
           取消
         </button>
@@ -4826,7 +4869,7 @@ document.querySelector('.card-item').addEventListener('click', () => {
             showMultiUserWarning = false;
             requestAuth(() => performAuthModeSwitch('multi'), '请输入管理员密码以确认切换');
           "
-          class="flex-1 px-4 py-2.5 bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-gray-800 transition-colors shadow-md"
+          class="flex-1 px-4 py-2.5 min-h-[44px] bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-gray-800 transition-colors shadow-md"
         >
           确认切换
         </button>
@@ -4837,23 +4880,23 @@ document.querySelector('.card-item').addEventListener('click', () => {
   <!-- Delete Confirmation Modal -->
   <div
     v-if="showDeleteWidgetConfirm"
-    class="fixed inset-0 z-[70] flex items-center justify-center bg-black/20 backdrop-blur-sm"
+    class="fixed inset-0 z-[70] flex items-center justify-center bg-black/20 backdrop-blur-sm p-4 pt-[calc(1rem+env(safe-area-inset-top))] pb-[calc(1rem+env(safe-area-inset-bottom))]"
   >
     <div
-      class="bg-white rounded-xl shadow-xl p-6 w-80 border border-gray-100 transform scale-100 animate-fade-in"
+      class="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm border border-gray-100 transform scale-100 animate-fade-in"
     >
       <h3 class="text-base font-bold text-gray-900 mb-2">确认删除</h3>
       <p class="text-sm text-gray-500 mb-6">确定要删除这个万能窗口吗？此操作无法撤销。</p>
       <div class="flex gap-3">
         <button
           @click="showDeleteWidgetConfirm = false"
-          class="flex-1 px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm font-bold hover:bg-gray-200 transition-colors"
+          class="flex-1 px-4 py-2 min-h-[44px] bg-gray-100 text-gray-600 rounded-lg text-sm font-bold hover:bg-gray-200 transition-colors"
         >
           取消
         </button>
         <button
           @click="confirmRemoveWidget"
-          class="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-gray-800 transition-colors"
+          class="flex-1 px-4 py-2 min-h-[44px] bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-gray-800 transition-colors"
         >
           删除
         </button>
@@ -4863,7 +4906,7 @@ document.querySelector('.card-item').addEventListener('click', () => {
 
   <div
     v-if="showRenameModal"
-    class="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+    class="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 pt-[calc(1rem+env(safe-area-inset-top))] pb-[calc(1rem+env(safe-area-inset-bottom))]"
   >
     <div class="bg-white rounded-xl shadow-xl w-full max-w-sm p-4 border border-gray-100">
       <div class="text-base font-bold text-gray-900">修改昵称</div>
@@ -4880,14 +4923,14 @@ document.querySelector('.card-item').addEventListener('click', () => {
       <div class="mt-4 flex justify-end gap-2">
         <button
           @click="showRenameModal = false"
-          class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg text-sm transition-colors"
+          class="px-4 py-2 min-h-[44px] text-gray-600 hover:bg-gray-100 rounded-lg text-sm transition-colors"
         >
           取消
         </button>
         <button
           @click="updateDisplayName"
           :disabled="isUpdatingProfile"
-          class="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-gray-800 disabled:opacity-50 transition-colors"
+          class="px-4 py-2 min-h-[44px] bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-gray-800 disabled:opacity-50 transition-colors"
         >
           {{ isUpdatingProfile ? "保存中..." : "保存" }}
         </button>

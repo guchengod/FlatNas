@@ -34,7 +34,8 @@ vi.mock('../stores/main', () => ({
   useMainStore: vi.fn(() => ({
     isLogged: true,
     saveWidget: vi.fn(),
-    socket: { emit: vi.fn() },
+    getHeaders: vi.fn(() => ({})),
+    socket: { emit: vi.fn(), on: vi.fn(), off: vi.fn() },
     token: 'fake-token',
     user: { id: 1, username: 'test' }
   }))

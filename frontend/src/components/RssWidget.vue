@@ -72,7 +72,7 @@ const onDragEnd = () => {
   // Reconstruct store.rssFeeds: new order of enabled + existing disabled
   const disabled = store.rssFeeds.filter((f) => !f.enable);
   store.rssFeeds = [...localFeeds.value, ...disabled];
-  store.saveData();
+  store.markDirty();
 };
 
 // Watch for feed changes to reset/update

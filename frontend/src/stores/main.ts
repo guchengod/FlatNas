@@ -2,6 +2,7 @@ import { ref, computed, watch } from "vue";
 import { defineStore } from "pinia";
 import { useStorage } from "@vueuse/core";
 import io from "socket.io-client";
+import pako from "pako";
 import type {
   NavItem,
   NavGroup,
@@ -34,11 +35,17 @@ export const useMainStore = defineStore("main", () => {
   });
   const isConnected = ref(false);
   let socketListenersBound = false;
+  let visibilityVersionCheckBound = false;
   let isInitializing = false;
   let isFirstConnect = true;
-  const NETWORK_HEARTBEAT_INTERVAL = 5000;
-  const NETWORK_HEARTBEAT_TIMEOUT = 10000;
+  const NETWORK_HEARTBEAT_INTERVAL = 10000;
+  const NETWORK_HEARTBEAT_TIMEOUT = 20000;
+  const NETWORK_HEARTBEAT_CHECK_INTERVAL = 3000;
   const NETWORK_POLL_INTERVAL = 30000;
+  // 白名单（latency）模式下降低心跳频率，减少请求，仍保证 300ms 内延迟可正常维持
+  const NETWORK_HEARTBEAT_INTERVAL_LATENCY = 30000;
+  const NETWORK_HEARTBEAT_TIMEOUT_LATENCY = 60000;
+  const NETWORK_HEARTBEAT_CHECK_INTERVAL_LATENCY = 10000;
   const NETWORK_IDLE_BROADCAST_INTERVAL = 30000;
   const networkSyncMode = ref<"broadcast" | "poll">("broadcast");
   let networkHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -50,6 +57,7 @@ export const useMainStore = defineStore("main", () => {
   let isApplyingNetworkMode = false;
   let isApplyingServerData = false;
   const DEFAULT_MARKETPLACE_LIST_URL = "http://qdnas.icu:23111/";
+  const LEGACY_DEFAULT_MARKETPLACE_LIST_URL = "https://qdnas.icu:23111/";
   const DEV_MARKETPLACE_LIST_URL = "http://localhost:5174/";
 
   socket.on("connect", async () => {
@@ -396,6 +404,8 @@ export const useMainStore = defineStore("main", () => {
     }
   };
 
+  /** 心跳曾断开（超时切到 poll）；再次被激活时若版本不同则提示是否同步 */
+  let heartbeatLostSinceLastVisible = false;
   const updateNetworkSyncMode = (active: boolean) => {
     const nextMode = active ? "broadcast" : "poll";
     if (nextMode === networkSyncMode.value) return;
@@ -407,23 +417,34 @@ export const useMainStore = defineStore("main", () => {
       }
       return;
     }
+    heartbeatLostSinceLastVisible = true;
     if (!networkPollTimer) {
       networkPollTimer = setInterval(pollNetworkMode, NETWORK_POLL_INTERVAL);
     }
     pollNetworkMode();
   };
 
+  const getHeartbeatInterval = () =>
+    appConfig.value.forceNetworkMode === "latency" ? NETWORK_HEARTBEAT_INTERVAL_LATENCY : NETWORK_HEARTBEAT_INTERVAL;
+  const getHeartbeatTimeout = () =>
+    appConfig.value.forceNetworkMode === "latency" ? NETWORK_HEARTBEAT_TIMEOUT_LATENCY : NETWORK_HEARTBEAT_TIMEOUT;
+  const getHeartbeatCheckInterval = () =>
+    appConfig.value.forceNetworkMode === "latency" ? NETWORK_HEARTBEAT_CHECK_INTERVAL_LATENCY : NETWORK_HEARTBEAT_CHECK_INTERVAL;
+
   const startNetworkHeartbeat = () => {
     if (networkHeartbeatTimer) clearInterval(networkHeartbeatTimer);
     if (networkHeartbeatCheckTimer) clearInterval(networkHeartbeatCheckTimer);
     emitNetworkHeartbeat();
-    networkHeartbeatTimer = setInterval(emitNetworkHeartbeat, NETWORK_HEARTBEAT_INTERVAL);
+    const interval = getHeartbeatInterval();
+    const checkInterval = getHeartbeatCheckInterval();
+    networkHeartbeatTimer = setInterval(emitNetworkHeartbeat, interval);
     networkHeartbeatCheckTimer = setInterval(() => {
+      const timeout = getHeartbeatTimeout();
       const active =
         lastNetworkHeartbeatAt > 0 &&
-        Date.now() - lastNetworkHeartbeatAt <= NETWORK_HEARTBEAT_TIMEOUT;
+        Date.now() - lastNetworkHeartbeatAt <= timeout;
       updateNetworkSyncMode(active);
-    }, 1000);
+    }, checkInterval);
   };
 
   const stopNetworkHeartbeat = () => {
@@ -435,8 +456,48 @@ export const useMainStore = defineStore("main", () => {
     updateNetworkSyncMode(false);
   };
 
+  // Dashboard pulse: single timer to align Docker/Music polling and reduce scattered requests
+  const DASHBOARD_PULSE_INTERVAL = 15000;
+  const dashboardPulseCallbacks = new Set<() => void>();
+  let dashboardPulseTimer: ReturnType<typeof setInterval> | null = null;
+
+  const startDashboardPulse = () => {
+    if (dashboardPulseTimer) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    if (dashboardPulseCallbacks.size === 0) return;
+    dashboardPulseTimer = setInterval(() => {
+      dashboardPulseCallbacks.forEach((f) => f());
+    }, DASHBOARD_PULSE_INTERVAL);
+  };
+
+  const stopDashboardPulse = () => {
+    if (dashboardPulseTimer) {
+      clearInterval(dashboardPulseTimer);
+      dashboardPulseTimer = null;
+    }
+  };
+
+  const registerDashboardPulse = (fn: () => void) => {
+    dashboardPulseCallbacks.add(fn);
+    if (typeof document !== "undefined" && document.visibilityState !== "hidden") {
+      startDashboardPulse();
+    }
+  };
+
+  const unregisterDashboardPulse = (fn: () => void) => {
+    dashboardPulseCallbacks.delete(fn);
+    if (dashboardPulseCallbacks.size === 0) stopDashboardPulse();
+  };
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") stopDashboardPulse();
+      else if (dashboardPulseCallbacks.size > 0) startDashboardPulse();
+    });
+  }
+
   // Version Check
-  const currentVersion = "1.1.3";
+  const currentVersion = "1.1.5dev1";
   const latestVersion = ref("");
   const dockerUpdateAvailable = ref(false);
   const updateCheckLastAt = useStorage<number>("flat-nas-update-check-last-at", 0);
@@ -784,9 +845,21 @@ export const useMainStore = defineStore("main", () => {
     const nextServerLayoutMap = buildServerLayoutMap(incomingWidgets);
     const nextLayoutSignature = buildServerLayoutSignature(nextServerLayoutMap);
     const previousById = new Map(widgets.value.map((widget) => [widget.id, widget] as const));
+    const preserveLayout = layoutEditInProgress.value;
     const nextWidgets = incomingWidgets.map((incomingWidget) => {
       const previous = previousById.get(incomingWidget.id);
       const mergedBase = previous ? ({ ...previous, ...incomingWidget } as WidgetConfig) : incomingWidget;
+      if (preserveLayout && previous) {
+        mergedBase.x = previous.x;
+        mergedBase.y = previous.y;
+        mergedBase.w = previous.w;
+        mergedBase.h = previous.h;
+        mergedBase.colSpan = previous.colSpan;
+        mergedBase.rowSpan = previous.rowSpan;
+        mergedBase.layouts = previous.layouts
+          ? (JSON.parse(JSON.stringify(previous.layouts)) as typeof previous.layouts)
+          : undefined;
+      }
       return applyWidgetUiState(mergedBase);
     });
 
@@ -978,7 +1051,8 @@ export const useMainStore = defineStore("main", () => {
       if (cache.appConfig) appConfig.value = { ...appConfig.value, ...cache.appConfig };
       if (
         !appConfig.value.marketplaceListUrl ||
-        appConfig.value.marketplaceListUrl === DEV_MARKETPLACE_LIST_URL
+        appConfig.value.marketplaceListUrl === DEV_MARKETPLACE_LIST_URL ||
+        appConfig.value.marketplaceListUrl === LEGACY_DEFAULT_MARKETPLACE_LIST_URL
       ) {
         appConfig.value.marketplaceListUrl = DEFAULT_MARKETPLACE_LIST_URL;
       }
@@ -1050,7 +1124,7 @@ export const useMainStore = defineStore("main", () => {
     // If groups is empty array [], it means user deleted all groups, so don't restore.
     if (data.items && data.items.length > 0 && !data.groups) {
       groups.value = [{ id: Date.now().toString(), title: "默认分组", items: data.items }];
-      saveData();
+      markDirty();
     } else if (data.groups) {
       groups.value = data.groups;
     } else {
@@ -1067,7 +1141,8 @@ export const useMainStore = defineStore("main", () => {
     if (data.appConfig) appConfig.value = { ...appConfig.value, ...data.appConfig };
     if (
       !appConfig.value.marketplaceListUrl ||
-      appConfig.value.marketplaceListUrl === DEV_MARKETPLACE_LIST_URL
+      appConfig.value.marketplaceListUrl === DEV_MARKETPLACE_LIST_URL ||
+      appConfig.value.marketplaceListUrl === LEGACY_DEFAULT_MARKETPLACE_LIST_URL
     ) {
       appConfig.value.marketplaceListUrl = DEFAULT_MARKETPLACE_LIST_URL;
     }
@@ -1161,7 +1236,7 @@ export const useMainStore = defineStore("main", () => {
     // Fetch custom scripts separately
     fetchCustomScripts();
 
-    checkUpdate();
+    // checkUpdate 仅保留在 init 与设置内显式检查时调用，避免 data-updated 导致 tags/docker-status 高频（30 分钟 TTL 由 checkUpdate 内部保证）
     // Initial snapshot load should also reset dirty state
     const currentLayoutMap = buildServerLayoutMap(widgets.value);
     lastSavedLayoutSignature.value = buildServerLayoutSignature(currentLayoutMap);
@@ -1170,6 +1245,7 @@ export const useMainStore = defineStore("main", () => {
     layoutDirty.value = false;
 
     saveToCache(data);
+    hasUnsavedChanges.value = false;
     const tEnd = performance.now();
     console.log("handleDataUpdate timing", {
       userMs: Math.round(tUser - tStart),
@@ -1449,6 +1525,12 @@ export const useMainStore = defineStore("main", () => {
           }
         });
         socketListenersBound = true;
+        if (typeof document !== "undefined" && !visibilityVersionCheckBound) {
+          visibilityVersionCheckBound = true;
+          document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") checkVersionAfterActivation();
+          });
+        }
       }
       if (token.value) {
         socket.emit("auth", { token: token.value });
@@ -1469,8 +1551,43 @@ export const useMainStore = defineStore("main", () => {
     serverVersion: 0,
     clientVersion: 0,
   });
+  /** 冲突解决中：此期间拦截新自动保存请求，仅置 hasPendingSave，保证数据流单一 */
+  const conflictResolving = ref(false);
+
+  /** 有未保存的本地修改；仅当用户点击「保存」或编辑模式「完成」时才真正上传 */
+  const hasUnsavedChanges = ref(false);
+  const markDirty = () => {
+    if (isLogged.value) hasUnsavedChanges.value = true;
+  };
+
+  /** 心跳断过后再次激活且服务端版本不同时，弹窗确认是否同步 */
+  const syncConfirmModal = ref({ show: false, serverVersion: 0 });
+  const checkVersionAfterActivation = async () => {
+    if (!isLogged.value || !heartbeatLostSinceLastVisible) return;
+    heartbeatLostSinceLastVisible = false;
+    try {
+      const res = await fetch("/api/version", { headers: getHeaders() });
+      if (!res.ok) return;
+      const data = (await res.json()) as { version?: number };
+      const serverVer = normalizeVersion(data?.version);
+      if (serverVer !== dataVersion.value) {
+        syncConfirmModal.value = { show: true, serverVersion: serverVer };
+      }
+    } catch {
+      // ignore
+    }
+  };
+  const confirmSyncFromServer = async () => {
+    syncConfirmModal.value = { show: false, serverVersion: 0 };
+    await fetchAndProcessData();
+  };
+  const dismissSyncConfirm = () => {
+    syncConfirmModal.value = { show: false, serverVersion: 0 };
+  };
 
   const layoutDirty = ref(false);
+  /** 组件区正在编辑：应用服务端数据时保留本地布局，避免外网下 409/补拉导致抖动 */
+  const layoutEditInProgress = ref(false);
   // 内存中的上一次布局快照，用于撤销
   // 改名：lastSavedLayoutSnapshot，明确语义为“上次成功保存的快照”
   const lastSavedLayoutSnapshot = ref<Record<string, WidgetLayoutSnapshot> | null>(null);
@@ -1505,12 +1622,19 @@ export const useMainStore = defineStore("main", () => {
       saveTimer = null;
     }
 
+    // 冲突解决期间，仅允许通过 resolveConflict 触发的 force 保存；其它保存请求只置 hasPendingSave
+    if (conflictResolving.value && !force) {
+      hasPendingSave.value = true;
+      return;
+    }
+
     // 移除：不要在 saveData 开始时更新快照，因为此时 widgets 已经是脏数据了！
     // 应该在保存成功后更新快照。
 
     const doSave = async () => {
       // 冲突状态下，除非强制保存，否则不执行任何保存
       if (conflictState.value.show && !force) {
+        hasPendingSave.value = false;
         return;
       }
 
@@ -1563,17 +1687,63 @@ export const useMainStore = defineStore("main", () => {
         // Optimistic cache save to ensure data persistence even if network fails
         saveToCache(body);
 
-        const controller = new AbortController();
-        const timeout = window.setTimeout(() => controller.abort(), 15000);
-        const res = await fetch("/api/save", {
-          method: "POST",
-          headers: getHeaders(),
-          body: json,
-          signal: controller.signal,
-        }).finally(() => window.clearTimeout(timeout));
+        // Compress data
+        const compressed = pako.gzip(json);
+
+        // 保存重试逻辑：慢速网络/内网穿透环境下需要更长超时和重试
+        const MAX_SAVE_RETRIES = 3;
+        const SAVE_TIMEOUT_MS = 60000; // 60秒，适应慢速网络
+        let saveAttempt = 0;
+        let res: Response | null = null;
+
+        while (saveAttempt < MAX_SAVE_RETRIES) {
+          saveAttempt++;
+          try {
+            const controller = new AbortController();
+            const timeout = window.setTimeout(() => controller.abort(), SAVE_TIMEOUT_MS);
+            res = await fetch("/api/save", {
+              method: "POST",
+              headers: {
+                ...getHeaders(),
+                "Content-Encoding": "gzip",
+              },
+              body: compressed,
+              signal: controller.signal,
+            }).finally(() => window.clearTimeout(timeout));
+
+            // 成功响应，跳出重试循环
+            if (res.ok || res.status === 409 || res.status === 401) {
+              break;
+            }
+
+            // 服务器错误（5xx）或网络错误，准备重试
+            if (saveAttempt < MAX_SAVE_RETRIES) {
+              const delay = Math.min(1000 * Math.pow(2, saveAttempt - 1), 5000); // 指数退避：1s, 2s, 4s
+              console.warn(`保存失败 (尝试 ${saveAttempt}/${MAX_SAVE_RETRIES})，${delay}ms 后重试...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
+          } catch (e) {
+            // 网络错误或超时
+            if (e instanceof DOMException && e.name === "AbortError") {
+              if (saveAttempt < MAX_SAVE_RETRIES) {
+                const delay = Math.min(1000 * Math.pow(2, saveAttempt - 1), 5000);
+                console.warn(`保存超时 (尝试 ${saveAttempt}/${MAX_SAVE_RETRIES})，${delay}ms 后重试...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+              }
+            }
+            throw e; // 其他错误抛出到外层 catch
+          }
+        }
+
+        if (!res) {
+          throw new Error(`保存失败：已重试 ${MAX_SAVE_RETRIES} 次`);
+        }
 
         if (res.ok) {
           conflictState.value.show = false;
+          hasUnsavedChanges.value = false;
           const result = await res.json().catch(() => null);
           if (result && typeof (result as { version?: number }).version !== "undefined") {
             dataVersion.value = normalizeVersion((result as { version?: number }).version);
@@ -1589,6 +1759,7 @@ export const useMainStore = defineStore("main", () => {
           if (body.password) {
             password.value = "";
           }
+          saveCustomScripts();
           // 如果保存期间其他端有更新，补拉一次服务端数据以合并差异
           if (pendingServerVersion.value > dataVersion.value) {
             pendingServerVersion.value = 0;
@@ -1609,11 +1780,62 @@ export const useMainStore = defineStore("main", () => {
               return;
             }
 
+            // [Fix Question 3] 智能冲突检测：如果是纯数据变动（布局/分组/配置未变），则静默同步
+            try {
+              const remoteRes = await fetch("/api/data", { headers: getHeaders() });
+              if (remoteRes.ok) {
+                const remoteData = await remoteRes.json();
+
+                // 1. Check Layout
+                const remoteLayoutMap = buildServerLayoutMap(remoteData.widgets || []);
+                const remoteSig = buildServerLayoutSignature(remoteLayoutMap);
+                const localSig = buildServerLayoutSignature(buildServerLayoutMap(widgets.value));
+                const isLayoutSame = remoteSig === localSig;
+
+                // 2. Check Groups
+                // Simple JSON stringify comparison
+                const remoteGroups = remoteData.groups || [];
+                const localGroups = groups.value;
+                const isGroupsSame = JSON.stringify(remoteGroups) === JSON.stringify(localGroups);
+
+                // 3. Check AppConfig
+                // We need to be careful about local-only fields if any, but usually appConfig is fully synced
+                const remoteConfig = remoteData.appConfig || {};
+                const localConfig = appConfig.value;
+                const isConfigSame = JSON.stringify(remoteConfig) === JSON.stringify(localConfig);
+
+                if (isLayoutSame && isGroupsSame && isConfigSame) {
+                  // Conflict is only in widget data (e.g. Memo content, Clock style).
+                  // For Memo, it handles its own sync, so global save is redundant.
+                  // For others, we accept server version (Last Write Wins from server perspective for now).
+                  // We sync to server state to resolve conflict without popup.
+                  console.log("Non-structural conflict detected, auto-resolving by syncing from server...");
+
+                  // Update version
+                  dataVersion.value = v;
+
+                  // Apply server data (this updates store widgets to match server)
+                  handleDataUpdate(remoteData);
+
+                  // Reset dirty state since we synced
+                  const currentLayoutMap = buildServerLayoutMap(widgets.value);
+                  lastSavedLayoutSignature.value = buildServerLayoutSignature(currentLayoutMap);
+                  lastSavedLayoutSnapshot.value = JSON.parse(JSON.stringify(currentLayoutMap));
+                  layoutDirty.value = false;
+
+                  pendingServerVersion.value = 0;
+                  return;
+                }
+              }
+            } catch (e) {
+              console.warn("Smart conflict check failed", e);
+            }
+
             // 第一次遇到 409，尝试自动采纳服务端版本号后重试一次（当前标签的改动优先）
             // 若其他端也在同步，它们会通过 data-updated 事件得到最新版本
             const retryBody = { ...body, version: v };
             const retryController = new AbortController();
-            const retryTimeout = window.setTimeout(() => retryController.abort(), 15000);
+            const retryTimeout = window.setTimeout(() => retryController.abort(), 60000); // 延长到 60 秒
             const retryRes = await fetch("/api/save", {
               method: "POST",
               headers: getHeaders(),
@@ -1622,6 +1844,7 @@ export const useMainStore = defineStore("main", () => {
             }).finally(() => window.clearTimeout(retryTimeout));
             if (retryRes.ok) {
               conflictState.value.show = false;
+              hasUnsavedChanges.value = false;
               const retryResult = await retryRes.json().catch(() => null);
               if (retryResult && typeof (retryResult as { version?: number }).version !== "undefined") {
                 dataVersion.value = normalizeVersion((retryResult as { version?: number }).version);
@@ -1642,12 +1865,34 @@ export const useMainStore = defineStore("main", () => {
               pendingServerVersion.value = 0;
               return;
             }
-            // 重试仍然失败（极少情况），才显示冲突弹窗
+            // 仅当本次保存包含「组件区布局」或「卡片区位置」变动时才显示冲突弹窗；
+            // 纯组件内容变化（如备忘录文字）与版本冲突无关，静默拉取服务端并应用，不弹窗。
+            const currentLayoutSig = buildServerLayoutSignature(buildServerLayoutMap(widgets.value));
+            const layoutChangedSinceLastSave = currentLayoutSig !== lastSavedLayoutSignature.value;
+            let groupsUnchangedSinceLastSave = false;
+            try {
+              const lastBody = JSON.parse(lastSavedJson) as { groups?: unknown } | null;
+              if (lastBody && Array.isArray(lastBody.groups)) {
+                groupsUnchangedSinceLastSave =
+                  JSON.stringify(groups.value) === JSON.stringify(lastBody.groups);
+              }
+            } catch {
+              // 无上次保存 body 时视为有结构变动，允许弹窗
+            }
+            const structureChangedSinceLastSave =
+              layoutChangedSinceLastSave || !groupsUnchangedSinceLastSave;
+            if (!structureChangedSinceLastSave) {
+              dataVersion.value = v;
+              await fetchAndProcessData();
+              hasPendingSave.value = false;
+              return;
+            }
             conflictState.value = {
               show: true,
               serverVersion: v,
               clientVersion: dataVersion.value,
             };
+            hasPendingSave.value = false;
           }
           return;
         }
@@ -1722,7 +1967,7 @@ export const useMainStore = defineStore("main", () => {
       const index = groups.value.length + 1;
       const title = `新建分组 ${index}`;
       groups.value.push({ id, title, items: [] });
-      saveData();
+      markDirty();
     } catch (e) {
       console.error(e);
     }
@@ -1731,14 +1976,14 @@ export const useMainStore = defineStore("main", () => {
   const deleteGroup = (groupId: string, skipConfirm = false) => {
     if (!skipConfirm && !confirm("确定删除？")) return;
     groups.value = groups.value.filter((g) => g.id !== groupId);
-    saveData();
+    markDirty();
   };
 
   const updateGroupTitle = (groupId: string, newTitle: string) => {
     const group = groups.value.find((g) => g.id === groupId);
     if (group) {
       group.title = newTitle;
-      saveData();
+      markDirty();
     }
   };
 
@@ -1746,7 +1991,7 @@ export const useMainStore = defineStore("main", () => {
     const group = groups.value.find((g) => g.id === groupId);
     if (group) {
       Object.assign(group, updates);
-      saveData();
+      markDirty();
     }
   };
 
@@ -1754,7 +1999,7 @@ export const useMainStore = defineStore("main", () => {
     const group = groups.value.find((g) => g.id === groupId);
     if (group) {
       group.items.push({ ...item, isPublic: item.isPublic ?? true });
-      saveData();
+      markDirty();
     }
   };
 
@@ -1763,7 +2008,7 @@ export const useMainStore = defineStore("main", () => {
       const idx = group.items.findIndex((i) => i.id === updatedItem.id);
       if (idx !== -1) {
         group.items[idx] = updatedItem;
-        saveData();
+        markDirty();
         return;
       }
     }
@@ -1774,7 +2019,7 @@ export const useMainStore = defineStore("main", () => {
       const idx = group.items.findIndex((i) => i.id === id);
       if (idx !== -1) {
         group.items.splice(idx, 1);
-        saveData();
+        markDirty();
         return;
       }
     }
@@ -1922,7 +2167,7 @@ export const useMainStore = defineStore("main", () => {
       const w = widgets.value.find((x) => x.id === id);
       if (w) w.data = data as WidgetConfig["data"];
     }
-    await saveData();
+    markDirty();
   };
 
   watch(
@@ -1959,6 +2204,11 @@ export const useMainStore = defineStore("main", () => {
       if (!mode || mode === prev) return;
       if (isApplyingNetworkMode) return;
       scheduleNetworkModeBroadcast(mode);
+      // 白名单/延迟模式切换时重启心跳，使新间隔生效
+      if (isConnected.value) {
+        stopNetworkHeartbeat();
+        startNetworkHeartbeat();
+      }
     },
   );
 
@@ -1966,7 +2216,7 @@ export const useMainStore = defineStore("main", () => {
     appConfig,
     () => {
       if (!isInitializing && !isApplyingNetworkMode && !isApplyingServerData) {
-        saveData();
+        markDirty();
       }
     },
     { deep: true },
@@ -1976,7 +2226,7 @@ export const useMainStore = defineStore("main", () => {
     widgets,
     () => {
       if (!isInitializing && !isApplyingServerData) {
-        saveData();
+        markDirty();
       }
     },
     { deep: true },
@@ -1986,7 +2236,7 @@ export const useMainStore = defineStore("main", () => {
     rssFeeds,
     () => {
       if (!isInitializing && !isApplyingServerData) {
-        saveData();
+        markDirty();
       }
     },
     { deep: true },
@@ -1996,7 +2246,7 @@ export const useMainStore = defineStore("main", () => {
     rssCategories,
     () => {
       if (!isInitializing && !isApplyingServerData) {
-        saveData();
+        markDirty();
       }
     },
     { deep: true },
@@ -2035,7 +2285,7 @@ export const useMainStore = defineStore("main", () => {
         .join("\n\n");
     }
     if (doSave) {
-      saveData();
+      markDirty();
       saveCustomScripts();
     }
   };
@@ -2093,14 +2343,17 @@ export const useMainStore = defineStore("main", () => {
   };
 
   const resolveConflict = async (action: "remote" | "local") => {
-    if (action === "remote") {
-      // 采用服务端：只拉取最新数据，不执行保存
-      await fetchAndProcessData();
-      conflictState.value.show = false;
-    } else {
-      // 强制本端：执行强制保存
-      await saveData(true, true);
-      // saveData 成功后会关闭 conflictState
+    conflictState.value.show = false;
+    conflictResolving.value = true;
+    try {
+      if (action === "remote") {
+        await fetchAndProcessData();
+      } else {
+        await saveData(true, true);
+        // 若再次 409，doSave 内会设置 conflictState.show = true，弹窗会再次出现
+      }
+    } finally {
+      conflictResolving.value = false;
     }
   };
 
@@ -2200,9 +2453,19 @@ export const useMainStore = defineStore("main", () => {
     conflictState,
     isSaving,
     hasPendingSave,
+    hasUnsavedChanges,
+    markDirty,
     lastSavedLayoutSignature,
     layoutDirty,
+    layoutEditInProgress,
     resolveConflict,
     undoLayout,
+    syncConfirmModal,
+    confirmSyncFromServer,
+    dismissSyncConfirm,
+    registerDashboardPulse,
+    unregisterDashboardPulse,
+    startDashboardPulse,
+    stopDashboardPulse,
   };
 });

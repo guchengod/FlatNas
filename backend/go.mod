@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/docker/docker v25.0.3+incompatible
 	github.com/gin-contrib/cors v1.7.6
+	github.com/gin-contrib/gzip v1.2.5
 	github.com/gin-gonic/gin v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/googollee/go-socket.io v1.7.0
@@ -68,7 +69,6 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.40.0 // indirect
 	go.opentelemetry.io/otel/metric v1.40.0 // indirect
 	go.opentelemetry.io/otel/trace v1.40.0 // indirect
-	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect

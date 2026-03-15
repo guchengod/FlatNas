@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-contrib/cors"
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	socketio "github.com/googollee/go-socket.io"
 	"github.com/googollee/go-socket.io/engineio"
@@ -33,6 +34,13 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(middleware.RecoveryMiddleware())
+	r.Use(middleware.GzipDecompressMiddleware())
+
+	// Gzip 压缩中间件 - 大幅减少网络传输量，适应内网穿透/慢速网络环境
+	r.Use(gzip.Gzip(gzip.DefaultCompression))
+
+	// 设置请求体大小限制（增加到 50MB，适应大配置文件）
+	r.MaxMultipartMemory = 50 << 20 // 50 MB
 
 	allowedOrigins := map[string]struct{}{}
 	rawAllowed := strings.TrimSpace(os.Getenv("CORS_ALLOW_ORIGINS"))
@@ -146,6 +154,7 @@ func main() {
 	{
 		api.POST("/login", handlers.Login)
 		api.GET("/data", middleware.OptionalAuthMiddleware(), handlers.GetData)
+		api.GET("/version", middleware.OptionalAuthMiddleware(), handlers.GetVersion)
 		api.GET("/system-config", handlers.GetSystemConfig)
 		api.GET("/ip", handlers.GetIP)                                                             // Added GetIP
 		api.GET("/weather", handlers.GetWeather)                                                   // Added Weather
@@ -210,16 +219,16 @@ func main() {
 			authorized.POST("/mobile_backgrounds/upload", handlers.UploadMobileBackground)
 			authorized.POST("/music/upload", handlers.UploadMusic) // Added Music Upload
 
-		// Transfer
-		api.GET("/transfer/items", handlers.GetTransferItems)
-		authorized.POST("/transfer/text", handlers.SendText)
-		authorized.POST("/transfer/upload/init", handlers.UploadInit)
-		authorized.POST("/transfer/upload/chunk", handlers.UploadChunk)
-		authorized.POST("/transfer/upload/complete", handlers.UploadComplete)
-		authorized.POST("/transfer/download-token", handlers.DownloadToken)
-		authorized.DELETE("/transfer/items/:id", handlers.DeleteItem)
-		authorized.POST("/transfer/generate-thumb/:filename/:size", handlers.GenerateThumb)
-		authorized.POST("/transfer/regenerate-thumbs", handlers.RegenerateThumbs)
+			// Transfer
+			api.GET("/transfer/items", handlers.GetTransferItems)
+			authorized.POST("/transfer/text", handlers.SendText)
+			authorized.POST("/transfer/upload/init", handlers.UploadInit)
+			authorized.POST("/transfer/upload/chunk", handlers.UploadChunk)
+			authorized.POST("/transfer/upload/complete", handlers.UploadComplete)
+			authorized.POST("/transfer/download-token", handlers.DownloadToken)
+			authorized.DELETE("/transfer/items/:id", handlers.DeleteItem)
+			authorized.POST("/transfer/generate-thumb/:filename/:size", handlers.GenerateThumb)
+			authorized.POST("/transfer/regenerate-thumbs", handlers.RegenerateThumbs)
 
 			// Config Versions
 			authorized.GET("/config-versions", handlers.GetConfigVersions)

@@ -200,6 +200,7 @@ write_nginx_config() {
 server {
     listen ${FRONTEND_PORT};
     server_name _;
+    client_max_body_size 20m;
 
     root ${PUBLIC_DIR};
     index index.html;

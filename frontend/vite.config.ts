@@ -25,6 +25,14 @@ export default defineConfig(({ mode }) => {
       sourcemap: false,
       outDir,
       emptyOutDir: true,
+      rollupOptions: {
+        // 避免 UNRESOLVED_IMPORT 被 Vite 转为 throw（依赖中若存在 commonjs external 等会触发）
+        onwarn(warning, warn) {
+          if (warning.code === "UNRESOLVED_IMPORT") return;
+          if (typeof warning.message === "string" && warning.message.includes("external")) return;
+          warn(warning);
+        },
+      },
     },
     plugins: [vue(), mode === "development" && vueDevTools()],
     resolve: {

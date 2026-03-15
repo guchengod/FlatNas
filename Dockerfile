@@ -29,8 +29,9 @@ RUN npm ci
 # Copy source code
 COPY frontend/ .
 
-# Build frontend
+# Build frontend (使用 server/public 作为 publicDir，与上方 COPY 一致)
 ENV TAILWIND_DISABLE_NATIVE=1
+ENV VITE_DOCKER_BUILD=1
 RUN npm run build-only
 
 # Stage 2: Build Backend

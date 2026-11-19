@@ -17,6 +17,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/gin-gonic/gin"
 )
@@ -140,7 +141,7 @@ func doUpdateCheck() {
 			continue
 		}
 		pullCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		rc, err := dc.ImagePull(pullCtx, imageRef, types.ImagePullOptions{})
+		rc, err := dc.ImagePull(pullCtx, imageRef, dockerimage.PullOptions{})
 		cancel()
 		if err != nil {
 			addUpdateFailure(ctn, err)
@@ -353,7 +354,7 @@ func fetchContainerStats(ctx context.Context, dc *client.Client, id string) (*Do
 		return nil, err
 	}
 	defer resp.Body.Close()
-	var parsed types.StatsJSON
+	var parsed container.StatsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return nil, err
 	}
@@ -361,7 +362,7 @@ func fetchContainerStats(ctx context.Context, dc *client.Client, id string) (*Do
 	return &stats, nil
 }
 
-func calculateStats(s *types.StatsJSON) DockerStatsLite {
+func calculateStats(s *container.StatsResponse) DockerStatsLite {
 	var cpuPercent float64
 	cpuStats := s.CPUStats
 	preCPUStats := s.PreCPUStats
@@ -921,7 +922,7 @@ func TriggerUpdateCheck(c *gin.Context) {
 				continue
 			}
 			pullCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			rc, err := dc.ImagePull(pullCtx, imageRef, types.ImagePullOptions{})
+			rc, err := dc.ImagePull(pullCtx, imageRef, dockerimage.PullOptions{})
 			cancel()
 			if err != nil {
 				addUpdateFailure(ctn, err)

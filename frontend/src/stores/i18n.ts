@@ -58,6 +58,9 @@ export const useI18nStore = defineStore("i18n", () => {
       if (typeof localeRef !== "string") {
         (localeRef as { value: string }).value = locale;
       }
+      if (typeof document !== "undefined") {
+        document.documentElement.lang = locale;
+      }
 
       // 仅用户手动切换时持久化到 localStorage
       if (persist) {

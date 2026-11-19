@@ -79,6 +79,10 @@ const variantPanelClass = computed(() => {
   }
   return "";
 });
+
+const panelRole = computed(() =>
+  props.variant === "dialog" || props.variant === "sheet" ? "dialog" : undefined,
+);
 </script>
 
 <template>
@@ -99,6 +103,8 @@ const variantPanelClass = computed(() => {
       >
         <component
           :is="panelTag"
+          :role="panelRole"
+          :aria-modal="panelRole ? 'true' : undefined"
           :class="['overlay-motion-panel', variantPanelClass, panelClass]"
           :style="panelStyle"
           @click.stop

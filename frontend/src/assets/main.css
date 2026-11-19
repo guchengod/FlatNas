@@ -282,3 +282,10 @@
     zoom: 0.9;
   }
 }
+
+/* Accessibility: restore a visible keyboard focus ring.
+   Kept unlayered so it wins over Tailwind's layered `outline-none` utilities. */
+:focus-visible {
+  outline: 2px solid #0052d9;
+  outline-offset: 2px;
+}

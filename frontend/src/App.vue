@@ -453,7 +453,10 @@ onMounted(() => {
   <!-- Network Status Indicator -->
   <NetworkIndicator class="network-indicator-wrapper" />
 
-  <GridPanel />
+  <main>
+    <h1 class="sr-only">FlatNas</h1>
+    <GridPanel />
+  </main>
 
   <!-- 冲突提示：居中模态框 -->
   <Transition name="fade">
@@ -560,6 +563,8 @@ onMounted(() => {
     <div
       v-if="saveErrorMessage && !store.conflictState.show"
       class="fixed top-0 inset-x-0 z-[111] bg-amber-500/95 text-white shadow-xl backdrop-blur-md border-b border-amber-400/50 pt-[env(safe-area-inset-top)]"
+      role="alert"
+      aria-live="assertive"
     >
       <div class="max-w-7xl mx-auto px-4 py-2 text-sm font-medium">
         {{ saveErrorMessage }}
